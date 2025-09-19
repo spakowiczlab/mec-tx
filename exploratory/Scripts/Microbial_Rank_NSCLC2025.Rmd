@@ -1,0 +1,439 @@
+---
+title: "Microbial Abundance and Prevalence"
+author: "Dipankor Dhrubo"
+date: "2025-09-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(survival)
+library(ggsurvfit)
+library(survminer)
+library(FactoMineR)
+library(factoextra)
+library(DESeq2)
+library(igraph)
+library(purrr)
+library(rlang)
+library(mt.surv)
+library(patchwork)
+library(scales)
+library(tibble)
+```
+
+```{r}
+
+## loading the Candida count file
+
+Abundance<- 
+  read_csv("/fs/ess/PAS1695/projects/exotho/data/THO_decontaminated-counts_taxonomy_2025-05-05.csv.gz") %>%
+  select(-1)
+
+
+## Filtering out irrelevant genus
+## calculation and generating the plot
+
+Top_Abundant_microbe<- Abundance %>%
+  mutate(genus = str_remove(genus, "^[gG]__")) %>%                  # normalize
+  filter(                                                           # drop Homo + any unclassified
+    !str_detect(genus, regex("^Homo$", ignore_case = TRUE)),
+    !str_detect(genus, regex("unclassified", ignore_case = TRUE))
+  ) %>%
+  group_by(genus) %>%
+  summarise(sum.counts = sum(counts), .groups = "drop") %>%
+  slice_max(sum.counts, n = 20, with_ties = FALSE)
+
+
+Top_20_microbes <- Top_Abundant_microbe %>% pull(genus)
+
+abundance_plot <- Top_Abundant_microbe %>%              # Considering the top 20 abundant Microbes 
+  mutate(genus = fct_reorder(genus, sum.counts)) %>%
+  ggplot(aes(x = genus, y = sum.counts, fill = genus)) +
+  geom_col(width = 0.8) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = scales::label_number(scale_cut = scales::cut_si(" ")), 
+    expand = expansion(mult = c(0, .05))
+  ) +
+  scale_fill_viridis_d(option = "D", begin = 0.1, end = 0.9) +     
+  labs(
+    title = "Microbial Abundance in NSCLC ORIEN",
+    x = "Genus",
+    y = "Total Counts"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_text(size = 11, face = "bold", color = "black"),
+    panel.grid = element_blank()
+  )
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLC_Abundance_plot.png",abundance_plot, width = 12, height = 10)
+
+#### Microbial Prevalence 
+
+
+genus_presence <- Abundance %>%
+  group_by(sample, genus) %>%
+  summarise(total_counts = sum(counts, na.rm = TRUE), .groups = "drop") %>%
+  mutate(present = total_counts > 70)
+
+# Compute prevalence across samples (fraction 0–1 and percent)
+prevalence_tbl <- genus_presence %>%
+  group_by(genus) %>%
+  summarise(prevalence = mean(present, na.rm = TRUE), .groups = "drop") %>%
+  mutate(genus = str_remove(genus, "^[gG]__")) %>%
+  filter(
+    !str_detect(genus, regex("^Homo$", ignore_case = TRUE)), 
+    !str_detect(genus, regex("unclassified", ignore_case = TRUE))) %>%  
+  arrange(desc(prevalence))
+
+# Keep only top 20 by prevalence
+prevalence_top20 <- prevalence_tbl %>%
+  slice_max(prevalence, n = 20, with_ties = FALSE) %>%
+  mutate(genus = fct_reorder(genus, prevalence))
+
+## plotting the prevalance plot
+cc_prev <- ggplot(prevalence_top20,
+                  aes(x = genus, y = prevalence, fill = genus)) +
+  geom_col(width = 0.8) +
+  coord_flip(clip = "off") +
+  scale_y_continuous(
+    labels = label_percent(accuracy = 1),
+    limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_viridis_d(option = "D", end = 0.95) +
+  labs(
+    title = "",
+    x = "Genus",
+    y = "Prevalence (% of samples)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold"),
+    axis.text.y = element_text(face = "italic"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLC_Prevalence_plot.png",cc_prev, width = 12, height = 10)
+
+```
+
+
+
+```{r}
+
+#### Mtsurv plots for most abundant and prevalent microbes
+
+## Take the common between Abundant and prevalent microbes
+Most_Abundand_Prev_microbe<- intersect(Top_Abundant_microbe$genus, prevalence_top20$genus)
+
+
+### Creating a data from raw abundance file for mtsurv analysis
+
+mtsurv_data<- Abundance %>%
+  mutate(genus = str_remove(genus, "^[gG]__")) %>%                  # normalize
+  filter(                                                           # drop Homo + any unclassified
+    !str_detect(genus, regex("^Homo$", ignore_case = TRUE)),
+    !str_detect(genus, regex("unclassified", ignore_case = TRUE))
+  ) %>%
+  group_by(sample,genus) %>%
+  summarise(sum.counts = sum(counts), .groups = "drop") ## making sure there are no duplicates
+
+
+### Loading new survival data 
+
+processessed_data<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds") %>% select(sample,status,diagsurvtime)
+
+mtsurv_data_2<- mtsurv_data %>% left_join(processessed_data, by="sample") %>% drop_na()
+colnames(mtsurv_data_2)[4:5]<- c("vitalstatus","days")
+
+genus_levels <- unique(mtsurv_data_2$genus)
+
+# map plain names to the g__-prefixed names used in data
+map_name <- function(x) {
+  if (is.na(x)) return(NA_character_)
+  if (x %in% genus_levels) return(x)
+  gx <- paste0("g__", x)
+  if (gx %in% genus_levels) return(gx)
+  NA_character_
+}
+
+## Just added "g__" before the names in Most_Abundand_Prev_microbe
+species_mapped <- Most_Abundant_Prev_microbe %>%
+  as.character() %>% tidyr::replace_na("") %>%
+  lapply(map_name) %>% unlist(use.names = FALSE) %>%
+  stats::na.omit() %>% unique()
+
+# same simple structure you had, with tiny robustness tweaks
+
+# This function ensures to avoid empty or one-level groups
+
+safe_run <- function(genus_name) {
+  # counts per sample (join zeros for absent)
+  ab <- mtsurv_data_2 %>%
+    filter(genus == genus_name) %>%
+    group_by(sample) %>%
+    summarise(counts = sum(sum.counts, na.rm = TRUE), .groups = "drop")
+  
+  input.tax <- clin_df %>%
+    select(sample) %>%
+    left_join(ab, by = "sample") %>%
+    mutate(counts = replace_na(counts, 0)) %>%
+    arrange(sample)
+  
+  # guards: need variation & two event states overall
+  if (sd(input.tax$counts, na.rm = TRUE) == 0L || length(unique(clin_df$vitalstatus)) < 2L)
+    return(NULL)
+  
+  # candidate cuts and keep only those strictly between min/max
+  qs   <- seq(0.01, 0.99, by = 0.01)
+  cuts <- quantile(input.tax$counts, qs, na.rm = TRUE, type = 7)
+  ok   <- cuts > min(input.tax$counts, na.rm = TRUE) & cuts < max(input.tax$counts, na.rm = TRUE)
+  
+  # further require both arms exist and (optionally) both have events
+  if (any(ok)) {
+    cuts_ok <- cuts[ok]
+    ok2 <- vapply(cuts_ok, function(ct) {
+      g  <- input.tax$counts >= ct
+      n0 <- sum(!g); n1 <- sum(g)
+      if (n0 < 2 || n1 < 2) return(FALSE)
+      e0 <- sum(clin_df$vitalstatus[!g] > 0); e1 <- sum(clin_df$vitalstatus[g] > 0)
+      e0 > 0 && e1 > 0
+    }, logical(1))
+    qs <- qs[ok][ok2]
+  } else {
+    qs <- numeric(0)
+  }
+  if (!length(qs)) return(NULL)
+  
+  mt.surv::survivalByQuantile(
+    input.var   = "counts",
+    input.tax   = input.tax,
+    surv.dat    = clin_df,
+    percentiles = qs
+  )
+}
+
+
+threshold.mat.by.microbe <- setNames(
+  lapply(species_mapped, function(m) tryCatch(safe_run(m), error = function(e) {message(m, ": ", e$message); NULL})),
+  nm = species_mapped
+)
+
+
+
+# full survival frame (one row per sample)
+clin_df <- mtsurv_data_2 %>%
+  distinct(sample, vitalstatus, days) %>%
+  mutate(vitalstatus = as.integer(as.character(vitalstatus))) %>%
+  arrange(sample)
+
+
+
+all_microbe_df <- map2_dfr(
+  threshold.mat.by.microbe,
+  names(threshold.mat.by.microbe),
+  ~ mutate(.x, microbe = .y)
+)
+
+## Mtsurv plotting 
+
+ggplot(all_microbe_df, aes(x = percentile, y = -log10(pval), color = hazard.direction)) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray30") +
+  facet_wrap(~ microbe, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "Microbial MTsurv_plots:Most Prevalant and Abundant",
+    x = "Percentile",
+    y = expression(-log[10](p))
+  ) +
+  theme(strip.text = element_text(size = 11),
+        axis.text = element_text(size = 9),
+        legend.position = "bottom")
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLC_Microbial MTsurv_plots.png", width = 12, height = 10)
+
+
+####### Area under the curve
+calculateArea <- function(taxlev, threshold.mat, alpha = 0.05){
+  df <- threshold.mat[[taxlev]] %>%
+    dplyr::filter(pval < alpha)
+  
+  if (nrow(df) == 0) {
+    return(tibble::tibble(
+      survival.effect = as.character("none"),
+      sig.area = 0,
+      species = taxlev
+    ))
+  }
+  
+  output <- threshold.mat[[taxlev]]%>%
+    dplyr::filter(pval < alpha) %>%
+    dplyr::mutate(sig.dif = log(alpha) - log(pval),
+                  survival.effect = ifelse(hazard.direction == "<1", "positive", "negative")) %>%
+    dplyr::group_by(survival.effect) %>%
+    dplyr::summarise(sig.area = sum(sig.dif))%>%
+    dplyr::mutate(species = taxlev)
+  
+  return(output)
+}
+
+
+## calculating area under the curve for each microbe
+area_summary_df <- map_dfr(
+  names(threshold.mat.by.microbe),
+  function(cancer) {
+    tryCatch({
+      calculateArea(cancer, threshold.mat.by.microbe)
+    }, error = function(e) {
+      message(paste("Error in", cancer, ":", e$message))
+      return(NULL)
+    })
+  }
+)
+
+
+## Calculating sample size
+sample_sizes_df <- dplyr::count(mtsurv_data_2, genus, name = "sample_size") %>%
+  filter(genus %in% species_mapped)
+
+
+area_summary_df <- area_summary_df %>%
+  left_join(sample_sizes_df, by = c("species" = "genus"))
+
+
+
+# Set factor levels for species ordering by total area
+area_summary_df <- area_summary_df %>%
+  mutate(species = factor(species, levels = unique(species[order(sig.area)])))
+
+
+# Prepare data for plotting
+area_summary_df <- area_summary_df %>%
+  mutate(
+    species = factor(species, levels = unique(species[order(sig.area)])),
+    area_plot = case_when(
+      survival.effect == "positive" ~ -sig.area,  # Plot left
+      survival.effect == "negative" ~ sig.area,   # Plot right
+      TRUE ~ 0
+    )
+  )
+
+## Including the prevalent data in the plot
+
+prevalence_top20<- prevalence_top20 %>% filter(genus %in% area_summary_df$species)
+names(prevalence_top20)[1]<- "species"
+
+## Including the Abundant data in the plot
+abundance_data<- abundance_plot$data
+
+abundance_data <- abundance_data %>% filter(genus %in% area_summary_df$species)
+names(abundance_data)[1]<- "species"
+
+area_summary_df<- area_summary_df %>% left_join(prevalence_top20,by="species") %>%
+  left_join(abundance_data,by="species")
+
+
+# --- 0) ONE ordering for all panels (rank by net area; change if you prefer) ---
+species_order <- area_summary_df %>%
+  group_by(species) %>%
+  summarise(area_net = sum(ifelse(survival.effect == "negative", sig.area, -sig.area), na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(desc(area_net)) %>%
+  pull(species)
+
+# --- 1) Per-species metadata for LEFT & MIDDLE (no duplicates) ---
+meta_df <- area_summary_df %>%
+  distinct(species, sample_size, prevalence, sum.counts) %>%
+  mutate(
+    prevalence  = replace_na(prevalence, 0),
+    sum.counts  = replace_na(sum.counts, 0),
+    species     = factor(species, levels = species_order)
+  )
+
+# --- 2) Right panel data (keep both effects) ---
+right_df <- area_summary_df %>%
+  mutate(
+    species = factor(species, levels = species_order),
+    survival.effect = factor(survival.effect, levels = c("negative","positive"))
+  )
+
+# === Left: PREVALENCE (to the left) ===
+p_prev <- ggplot(meta_df) +
+  geom_col(aes(x = -prevalence, y = species), fill = "#61A9D9", alpha = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3) +
+  scale_x_continuous(labels = function(x) percent(abs(x))) +
+  labs(x = "Prevalence", y = "Microbe") +
+  theme_bw() +
+  theme(
+    axis.title.y = element_text(size = 12),
+    axis.text.y  = element_text(size = 11,face = "bold.italic"),
+    axis.title.x = element_text(size = 11),
+    legend.position = "none"
+  )
+
+# === Middle: TOTAL COUNTS (to the left) ===
+p_sum <- ggplot(meta_df) +
+  geom_col(aes(x = -sum.counts, y = species), fill = "#797CBA", alpha = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3) +
+  scale_x_continuous(labels = function(x) comma(abs(x))) +
+  labs(x = "Abundance", y = NULL) +
+  theme_bw() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_text(size = 11),
+    legend.position = "none"
+  )
+
+# === Right: AREA (your survival impact) ===
+p_area <- ggplot(right_df) +
+  geom_col(aes(x = area_plot, y = species, fill = survival.effect), alpha = 0.9) +
+  scale_fill_manual(values = c("positive" = "orange", "negative" = "#1F3E71")) +
+  labs(x = "Microbial Survival Impact", y = NULL, fill = "Survival Effect") +
+  theme_bw() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_text(size = 11,face = "bold"),
+    legend.position = "bottom"
+  )
+
+# === Combine ===
+library(patchwork)
+library(scales)
+
+library(forcats)
+
+# after you build meta_df and right_df (or area_summary_df), do:
+meta_df  <- meta_df  %>% mutate(species = fct_rev(species))
+right_df <- right_df %>% mutate(species = fct_rev(species))
+
+# then re-run p_prev, p_sum, p_area exactly as before
+
+final_plot <- p_prev + p_sum + p_area + plot_layout(ncol = 3, widths = c(1, 1, 1.2))
+final_plot <- (p_prev + p_sum + p_area +
+                 plot_layout(ncol = 3, widths = c(1, 1, 1.2))) +
+  plot_annotation(
+    title = "Microbial Prevalence, Abundance, and Survival impact",
+    caption = "α = 0.05",
+    theme = theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold", size = 14),
+      plot.caption  = element_text(size = 9)
+    )
+  )
+
+final_plot
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLC_Microbial_rank.png",plot = final_plot, width = 12, height = 10)
+
+```
