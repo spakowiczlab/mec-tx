@@ -19,25 +19,25 @@ library(survminer)
 
 ## Loading up the metadata
 
-orien <- read_csv("../THO_decontaminated-counts_taxonomy_2025-05-05.csv.gz")
+NSCLC_count <- read_csv("/fs/ess/PAS1695/projects/exotho/data/THO_decontaminated-counts_taxonomy_2025-05-05.csv.gz")
 orien<- orien %>% filter(orien$genus=="g__Candida") %>% select(-1)
 
-Linkage_2024 <- read_csv("../20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_ClinicalMolLinkage_V4.csv") %>%
+Linkage_2024 <- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_ClinicalMolLinkage_V4.csv") %>%
   select(ORIENAvatarKey,SpecimenSiteOfCollection,`Histology/Behavior`,`Tumor/Germline`, RNASeq,`Disease Type`, `Primary/Met`)
 
-Linkage_2023<- read_csv("../20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_ClinicalMolLinkage_V4.csv") %>%
+Linkage_2023<- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_ClinicalMolLinkage_V4.csv") %>%
   select(ORIENAvatarKey, SpecimenSiteOfCollection, Tumor.Germline,Histology.Behavior, RNASeq, Disease.Type, Primary.Met)
 
-Outcome<- read_csv("../20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Outcomes_V4.csv") %>% 
+Outcome<- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Outcomes_V4.csv") %>% 
   select(AvatarKey,ProgRecurInd,AgeAtCurrentDiseaseStatus,CurrentDiseaseStatus)
 
-Diagnosis <- read_csv("../20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv") %>% 
+Diagnosis <- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv") %>% 
   select(AvatarKey,AgeAtDiagnosis,GradeClinical,PathGroupStage, ClinGroupStage, PrimaryDiagnosisSite)
 
 
 ## Merge those into one file 
 
-seqtopatient <- orien %>% 
+seqtopatient <- NSCLC_count %>% 
   left_join(
     Linkage_2024 %>% select(ORIENAvatarKey, SpecimenSiteOfCollection,`Histology/Behavior`, `Tumor/Germline` ,`Disease Type`, `Primary/Met`,RNASeq), 
     by = c("sample"="RNASeq")) %>% 
@@ -117,11 +117,10 @@ processeddata <- seqtopatient %>%
   )) %>% 
   select(-c(PathGroupStage, ClinGroupStage))
 
-processeddata_2<- processeddata %>% filter(Primary_Met == "Primary")
 
 
 ## Removing any redundancy from the data like "Unknow or some other character value" for numeric variables
-kmsetup <- processeddata_2 %>% 
+kmsetup <- processeddata %>% 
   filter(grepl("^[0-9.]+$", AgeAtCurrentDiseaseStatus)) %>%
   mutate(AgeAtCurrentDiseaseStatus = as.numeric(AgeAtCurrentDiseaseStatus)) %>% 
   filter(grepl("^[0-9.]+$", AgeAtDiagnosis)) %>%
@@ -147,15 +146,44 @@ kmsetup_2<- kmsetup %>% group_by(AvatarKey) %>%
 lung_keywords <- c("lung", "Lung", "bronchus", "Bronchus", "trachea", "Trachea")
 
 
-
-
 # Keep rows where Specimen_site contains any of the lung-related keywords
 lung_sites <- kmsetup_2 %>%
   filter(grepl(paste(lung_keywords, collapse = "|"), Specimen_site, ignore.case = TRUE))
 
+### loading normalized Count data from recrad all cancer analysis
+normalize_count<- read_csv("/users/PAS1695/dipankor99/Github/recrad/exploratory/data/Candida_human_normalizecount_allcancer.csv") %>%
+  filter(sample %in% Lung_resampled_data$sample)
 
-Lung_primary_new_survdata<- kmsetup_2 %>% select(-counts) 
+Lung_resampled_data<- kmsetup_2 %>% select(-1,-counts, -CandidaCount)  %>% 
+  left_join(normalize_count %>% select(sample,Normalize_Candida),by="sample")
 
-write_rds(Lung_primary_new_survdata, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds")
+
+#### Adding the vital status and last contact data
+
+Vital_status<- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_VitalStatus_V4.csv"),
+                           read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_VitalStatus_V4.csv")) %>% 
+  filter(AvatarKey %in% Lung_resampled_data$AvatarKey) %>% select(AvatarKey,VitalStatus,AgeAtLastContact,AgeAtDeath) %>% filter(!VitalStatus == "Lost to follow-up")
+
+
+Vital_status<- Vital_status %>% group_by(AvatarKey) %>%
+  arrange(AgeAtLastContact) %>%  # Ensure it's sorted by age
+  slice_max(order_by = AgeAtLastContact, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
+  ungroup()
+  
+Lung_resampled_data <- Lung_resampled_data %>% left_join(Vital_status, by="AvatarKey")
+
+
+Lung_resampled_data_2<- Lung_resampled_data %>% mutate(
+  AgeAtDiagnosis = as.numeric(AgeAtDiagnosis),
+  status = case_when(VitalStatus == "Alive" ~ 0,
+                            VitalStatus == "Dead" ~ 1),
+  AgeAtLastContact = ifelse(grepl("Age 90 or older", AgeAtLastContact), "90", AgeAtLastContact),
+  AgeAtLastContact = as.numeric(AgeAtLastContact),
+  # Use AgeAtDeath if available, otherwise AgeAtLastContact
+  diagsurvtime = AgeAtLastContact - AgeAtDiagnosis
+  )
+
+
+write_rds(Lung_resampled_data_2, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds")
 
 ```
