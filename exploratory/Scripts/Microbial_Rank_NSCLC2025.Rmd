@@ -12,7 +12,6 @@ library(ggsurvfit)
 library(survminer)
 library(FactoMineR)
 library(factoextra)
-library(DESeq2)
 library(igraph)
 library(purrr)
 library(rlang)
@@ -125,13 +124,12 @@ ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLC
 ```
 
 
-
 ```{r}
 
 #### Mtsurv plots for most abundant and prevalent microbes
 
 ## Take the common between Abundant and prevalent microbes
-Most_Abundand_Prev_microbe<- intersect(Top_Abundant_microbe$genus, prevalence_top20$genus)
+Most_Abundant_Prev_microbe<- intersect(Top_Abundant_microbe$genus, prevalence_top20$genus)
 
 
 ### Creating a data from raw abundance file for mtsurv analysis
@@ -148,9 +146,9 @@ mtsurv_data<- Abundance %>%
 
 ### Loading new survival data 
 
-processessed_data<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds") %>% select(sample,status,diagsurvtime)
+processed_data<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds") %>% select(sample,status,diagsurvtime)
 
-mtsurv_data_2<- mtsurv_data %>% left_join(processessed_data, by="sample") %>% drop_na()
+mtsurv_data_2<- mtsurv_data %>% left_join(processed_data, by="sample") %>% drop_na()
 colnames(mtsurv_data_2)[4:5]<- c("vitalstatus","days")
 
 genus_levels <- unique(mtsurv_data_2$genus)
@@ -164,13 +162,21 @@ map_name <- function(x) {
   NA_character_
 }
 
-## Just added "g__" before the names in Most_Abundand_Prev_microbe
+## Just added "g__" before the names in Most_Abundant_Prev_microbe
 species_mapped <- Most_Abundant_Prev_microbe %>%
   as.character() %>% tidyr::replace_na("") %>%
   lapply(map_name) %>% unlist(use.names = FALSE) %>%
   stats::na.omit() %>% unique()
 
 # same simple structure you had, with tiny robustness tweaks
+
+# full survival frame (one row per sample)
+clin_df <- mtsurv_data_2 %>%
+  distinct(sample, vitalstatus, days) %>%
+  mutate(vitalstatus = as.integer(as.character(vitalstatus))) %>%
+  arrange(sample)
+
+
 
 # This function ensures to avoid empty or one-level groups
 
@@ -225,14 +231,6 @@ threshold.mat.by.microbe <- setNames(
   lapply(species_mapped, function(m) tryCatch(safe_run(m), error = function(e) {message(m, ": ", e$message); NULL})),
   nm = species_mapped
 )
-
-
-
-# full survival frame (one row per sample)
-clin_df <- mtsurv_data_2 %>%
-  distinct(sample, vitalstatus, days) %>%
-  mutate(vitalstatus = as.integer(as.character(vitalstatus))) %>%
-  arrange(sample)
 
 
 
@@ -365,6 +363,11 @@ right_df <- area_summary_df %>%
     survival.effect = factor(survival.effect, levels = c("negative","positive"))
   )
 
+# after you build meta_df and right_df (or area_summary_df), do:
+meta_df  <- meta_df  %>% mutate(species = fct_rev(species))
+right_df <- right_df %>% mutate(species = fct_rev(species))
+
+
 # === Left: PREVALENCE (to the left) ===
 p_prev <- ggplot(meta_df) +
   geom_col(aes(x = -prevalence, y = species), fill = "#61A9D9", alpha = 1) +
@@ -409,14 +412,6 @@ p_area <- ggplot(right_df) +
   )
 
 # === Combine ===
-library(patchwork)
-library(scales)
-
-library(forcats)
-
-# after you build meta_df and right_df (or area_summary_df), do:
-meta_df  <- meta_df  %>% mutate(species = fct_rev(species))
-right_df <- right_df %>% mutate(species = fct_rev(species))
 
 # then re-run p_prev, p_sum, p_area exactly as before
 

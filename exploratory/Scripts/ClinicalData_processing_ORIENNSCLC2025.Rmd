@@ -6,174 +6,68 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-library(tableone)
 library(knitr)
 library(tidyverse)
-library(umap)
-library(survival)
-library(survminer)
 ```
 
 
 ```{r}
 
-## Loading up the metadata
+#Loading the Candida count data
 
-NSCLC_count <- read_csv("/fs/ess/PAS1695/projects/exotho/data/THO_decontaminated-counts_taxonomy_2025-05-05.csv.gz")
-orien<- orien %>% filter(orien$genus=="g__Candida") %>% select(-1)
-
-Linkage_2024 <- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_ClinicalMolLinkage_V4.csv") %>%
-  select(ORIENAvatarKey,SpecimenSiteOfCollection,`Histology/Behavior`,`Tumor/Germline`, RNASeq,`Disease Type`, `Primary/Met`)
-
-Linkage_2023<- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_ClinicalMolLinkage_V4.csv") %>%
-  select(ORIENAvatarKey, SpecimenSiteOfCollection, Tumor.Germline,Histology.Behavior, RNASeq, Disease.Type, Primary.Met)
-
-Outcome<- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Outcomes_V4.csv") %>% 
-  select(AvatarKey,ProgRecurInd,AgeAtCurrentDiseaseStatus,CurrentDiseaseStatus)
-
-Diagnosis <- read_csv("/fs/ess/PAS1695/projects/exotho/data/clinical/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv") %>% 
-  select(AvatarKey,AgeAtDiagnosis,GradeClinical,PathGroupStage, ClinGroupStage, PrimaryDiagnosisSite)
+Candida_normalize_counts <- read_csv("/users/PAS1695/dipankor99/Github/recrad/exploratory/data/Candida_human_normalizecount_allcancer.csv") %>%
+  filter(Disease_Specific == "Lung Cancer")
 
 
-## Merge those into one file 
-
-seqtopatient <- NSCLC_count %>% 
-  left_join(
-    Linkage_2024 %>% select(ORIENAvatarKey, SpecimenSiteOfCollection,`Histology/Behavior`, `Tumor/Germline` ,`Disease Type`, `Primary/Met`,RNASeq), 
-    by = c("sample"="RNASeq")) %>% 
-  left_join(
-    Linkage_2023 %>% select(ORIENAvatarKey,SpecimenSiteOfCollection, Histology.Behavior,Tumor.Germline,Disease.Type, Primary.Met,RNASeq), 
-    by = c("sample"="RNASeq"),
-    suffix = c("_2024", "_2023") # Adds suffix to distinguish overlapping columns
-  ) %>%
-  mutate(
-    ORIENAvatarKey = coalesce(ORIENAvatarKey_2024, ORIENAvatarKey_2023),
-    Specimen_site= coalesce(SpecimenSiteOfCollection_2024, SpecimenSiteOfCollection_2023),
-    Tumor_Germline = coalesce(`Tumor/Germline`, Tumor.Germline),
-    Histology = coalesce(`Histology/Behavior`, Histology.Behavior),
-    Disease_type = coalesce(`Disease Type`, Disease.Type),
-    Primary_Met = coalesce(`Primary/Met`, Primary.Met)
-  ) %>%
-  select(-ends_with("_2024"), -ends_with("_2023"),-c(`Tumor/Germline`, Tumor.Germline,
-                                                     `Disease Type`, Disease.Type,
-                                                     `Primary/Met`, Primary.Met,
-                                                     `Histology/Behavior`, Histology.Behavior)) %>% 
-  rename(AvatarKey = ORIENAvatarKey)
+Pre_data <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_ClinicalMolLinkage_V4.csv"),
+                     read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_ClinicalMolLinkage_V4.csv")) %>%
+  distinct() %>%
+  filter(RNASeq != "") %>%
+  select(RNASeq, ORIENAvatarKey) %>%
+  rename(sample = RNASeq) 
 
 
+```
 
-recent_outcome <- Outcome %>%
+
+```{r}
+Candida_normalize_counts<- Candida_normalize_counts %>% left_join(Pre_data,by = "sample") %>% drop_na()
+
+# Making sure we are using the same sample
+
+samples<- Candida_normalize_counts$ORIENAvatarKey
+
+##
+
+Diagnosis <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Diagnosis_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv")) %>% 
+  filter(AvatarKey %in% samples) %>% select(AvatarKey,AgeAtDiagnosis) %>% 
+  filter(! AgeAtDiagnosis == "Unknown/Not Applicable") %>%
+  filter(! AgeAtDiagnosis == "Age Unknown/Not Recorded") %>%
+  mutate(AgeAtDiagnosis = ifelse(grepl("Age 90 or older", AgeAtDiagnosis), "90", AgeAtDiagnosis))
+
+### Taking the latest diagnostic time
+
+Diagnosis <- Diagnosis %>%
   group_by(AvatarKey) %>%
-  arrange(AvatarKey, desc(AgeAtCurrentDiseaseStatus))
-
-
-
-### 2nd level marging of metadata with tweaking some column
-
-processeddata <- seqtopatient %>% 
-  left_join(Diagnosis %>% select(AgeAtDiagnosis, PrimaryDiagnosisSite, ClinGroupStage, PathGroupStage, AvatarKey), by = "AvatarKey") %>%
-  left_join(recent_outcome %>% select(AgeAtCurrentDiseaseStatus, CurrentDiseaseStatus,ProgRecurInd, AvatarKey), by = "AvatarKey") %>% 
-  mutate(Stage = case_when(
-    PathGroupStage == "0" ~ "0",
-    PathGroupStage == "0a" ~ "0",
-    PathGroupStage == "I" ~ "I",
-    PathGroupStage == "IA" ~ "I",
-    PathGroupStage == "IA1" ~ "I",
-    PathGroupStage == "IB" ~ "I",
-    PathGroupStage == "II" ~ "II",
-    PathGroupStage == "IIA" ~ "II",
-    PathGroupStage == "IIB" ~ "II",
-    PathGroupStage == "IIC" ~ "II",
-    PathGroupStage == "III" ~ "III",
-    PathGroupStage == "IIIA" ~ "III",
-    PathGroupStage == "IIIB" ~ "III",
-    PathGroupStage == "IIIC" ~ "III",
-    PathGroupStage == "IIIC1" ~ "III",
-    PathGroupStage == "IV" ~ "IV",
-    PathGroupStage == "IVA" ~ "IV",
-    PathGroupStage == "IVB" ~ "IV",
-    PathGroupStage == "IVC" ~ "IV",
-    ClinGroupStage == "0" ~ "0",
-    ClinGroupStage == "0a" ~ "0",
-    ClinGroupStage == "I" ~ "I",
-    ClinGroupStage == "IA" ~ "I",
-    ClinGroupStage == "IA1" ~ "I",
-    ClinGroupStage == "IA2" ~ "I",
-    ClinGroupStage == "IB" ~ "I",
-    ClinGroupStage == "IC" ~ "I",
-    ClinGroupStage == "II" ~ "II",
-    ClinGroupStage == "IIA" ~ "II",
-    ClinGroupStage == "IIB" ~ "II",
-    ClinGroupStage == "IIC" ~ "II",
-    ClinGroupStage == "III" ~ "III",
-    ClinGroupStage == "IIIA" ~ "III",
-    ClinGroupStage == "IIIB" ~ "III",
-    ClinGroupStage == "IIIC" ~ "III",
-    ClinGroupStage == "IV" ~ "IV",
-    ClinGroupStage == "IVA" ~ "IV",
-    ClinGroupStage == "IVB" ~ "IV",
-    ClinGroupStage == "IVC" ~ "IV",
-    TRUE ~ "Unknown/Not Applicable"
-  )) %>% 
-  select(-c(PathGroupStage, ClinGroupStage))
-
-
-
-## Removing any redundancy from the data like "Unknow or some other character value" for numeric variables
-kmsetup <- processeddata %>% 
-  filter(grepl("^[0-9.]+$", AgeAtCurrentDiseaseStatus)) %>%
-  mutate(AgeAtCurrentDiseaseStatus = as.numeric(AgeAtCurrentDiseaseStatus)) %>% 
-  filter(grepl("^[0-9.]+$", AgeAtDiagnosis)) %>%
-  mutate(AgeAtDiagnosis = as.numeric(AgeAtDiagnosis)) %>% 
-  group_by(AvatarKey) %>% 
-  mutate(CandidaCount = sum(counts)) %>% #this combines both present species into one Candida number
-  ungroup() %>% 
-  filter(species == "s__[Candida]_auris")
-
-kmsetup <- kmsetup %>% select(-microbe, -Taxonomy,-domain, -kingdom, -phylum, -class, -order, -family, -species)
-
-
-## considering the latest diagnosis time 
-
-kmsetup_2<- kmsetup %>% group_by(AvatarKey) %>%
   arrange(AgeAtDiagnosis) %>%  # Ensure it's sorted by age
   slice_max(order_by = AgeAtDiagnosis, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
   ungroup()
 
-
-## Considering all the Lung associated sites
-
-lung_keywords <- c("lung", "Lung", "bronchus", "Bronchus", "trachea", "Trachea")
-
-
-# Keep rows where Specimen_site contains any of the lung-related keywords
-lung_sites <- kmsetup_2 %>%
-  filter(grepl(paste(lung_keywords, collapse = "|"), Specimen_site, ignore.case = TRUE))
-
-### loading normalized Count data from recrad all cancer analysis
-normalize_count<- read_csv("/users/PAS1695/dipankor99/Github/recrad/exploratory/data/Candida_human_normalizecount_allcancer.csv") %>%
-  filter(sample %in% Lung_resampled_data$sample)
-
-Lung_resampled_data<- kmsetup_2 %>% select(-1,-counts, -CandidaCount)  %>% 
-  left_join(normalize_count %>% select(sample,Normalize_Candida),by="sample")
-
-
-#### Adding the vital status and last contact data
-
 Vital_status<- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_VitalStatus_V4.csv"),
                            read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_VitalStatus_V4.csv")) %>% 
-  filter(AvatarKey %in% Lung_resampled_data$AvatarKey) %>% select(AvatarKey,VitalStatus,AgeAtLastContact,AgeAtDeath) %>% filter(!VitalStatus == "Lost to follow-up")
+  filter(AvatarKey %in% samples) %>% select(AvatarKey,VitalStatus,AgeAtLastContact,AgeAtDeath) %>% filter(!VitalStatus == "Lost to follow-up")
 
-
+### Considering the latest vital status
 Vital_status<- Vital_status %>% group_by(AvatarKey) %>%
   arrange(AgeAtLastContact) %>%  # Ensure it's sorted by age
   slice_max(order_by = AgeAtLastContact, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
   ungroup()
   
-Lung_resampled_data <- Lung_resampled_data %>% left_join(Vital_status, by="AvatarKey")
 
+survival<- Diagnosis %>% left_join(Vital_status, by = "AvatarKey") %>% drop_na()
 
-Lung_resampled_data_2<- Lung_resampled_data %>% mutate(
+survival_2<- survival %>% mutate(
   AgeAtDiagnosis = as.numeric(AgeAtDiagnosis),
   status = case_when(VitalStatus == "Alive" ~ 0,
                             VitalStatus == "Dead" ~ 1),
@@ -183,7 +77,28 @@ Lung_resampled_data_2<- Lung_resampled_data %>% mutate(
   diagsurvtime = AgeAtLastContact - AgeAtDiagnosis
   )
 
+```
 
-write_rds(Lung_resampled_data_2, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds")
+```{r}
+
+
+
+### merging All data (Count, survival)
+
+Final_mtsurv<- Candida_normalize_counts %>% rename(AvatarKey = ORIENAvatarKey ) %>% left_join(survival_2, by="AvatarKey")
+
+## Re-arranging the file
+Final_mtsurv<- Final_mtsurv %>% select(sample,AvatarKey,Disease_Group,Disease_Specific,Candida, Human_count, Normalize_Candida,status,diagsurvtime)
+
+Final_mtsurv<- Final_mtsurv %>% distinct() %>% drop_na()
+
+Final_mtsurv <- Final_mtsurv %>%
+  group_by(sample) %>%
+  slice_max(status, with_ties = FALSE) %>%  # Prefer status == 1 over 0
+  ungroup()
+
+
+
+write_rds(Final_mtsurv, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds")
 
 ```

@@ -1,0 +1,95 @@
+---
+title: "KmPlot_Table1_Analysis"
+author: "Dipankor Dhrubo"
+date: "2025-09-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tableone)
+library(knitr)
+library(tidyverse)
+install.packages("devtools")
+devtools::install_github("spakowiczlab/mt.surv")
+
+```
+
+
+```{r}
+#reading in the data from 00_processing_clinical_CRCORIEN2025.Rmd script 
+
+processed <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds")
+
+## Some minor improvement
+
+processed_2 <- processed %>%
+  mutate(
+    Histology = case_when(
+      grepl("adenocarcinoma|Adenocarcinoma|acinar|papillary|lepidic|mucinous|minimally invasive", Histology, ignore.case = TRUE) ~ "Adenocarcinoma",
+      grepl("squamous cell|squamous|basaloid", Histology, ignore.case = TRUE) ~ "Squamous Cell Carcinoma",
+      grepl("neuroendocrine", Histology, ignore.case = TRUE) ~ "Neuroendocrine Carcinoma",
+      grepl("mesothelioma|sarcoma|seminoma|thymoma|malignant tumor|pleomorphic|paraganglioma|spindle", Histology, ignore.case = TRUE) ~ "Other Tumors",
+      TRUE ~ "Other Carcinoma"  # Any diagnosis not fitting the above
+    )) 
+
+```
+
+```{r}
+# mtsurv plot generation
+
+Clinical <- processed_2 %>%
+  select(sample, diagsurvtime, status) %>%
+  dplyr::rename(vitalstatus = status) %>% mutate(days = as.numeric(diagsurvtime)) %>%
+  select(-diagsurvtime,sample, days, vitalstatus)
+
+Clinical<-Clinical[,c(1,3,2)] # Make sure you look at the dataframe first to select the correct columns.
+
+Abundance_data<- processed_2 %>% select(sample,Normalize_Candida)
+
+survoutput <- mt.surv::survivalByQuantile("Normalize_Candida", Abundance_data, Clinical)
+
+# Removing the NA value
+
+survoutput<- survoutput[complete.cases(survoutput),]
+
+# Creating the plot
+
+survoutput %>% 
+  ggplot(aes(x = percentile, y = -log10(pval), color = hazard.direction)) +
+  geom_line(lwd = 1) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") +
+  theme_bw()
+
+
+ggsave("/users/PAS1695/dipankor99/Github/exotho/exploratory/Figures/ORIEN_NSCLC2025/mtsurv_ORIEN_candida.png", height = 3, width = 6)
+
+```
+
+
+```{r}
+Candia<- mtsurv_data_2 %>% filter(genus=="Candida")
+
+Clinical <- Candia %>%
+  select(sample, vitalstatus, days)
+
+Abundance_data<- Candia %>% select(sample,sum.counts)
+
+survoutput <- mt.surv::survivalByQuantile("sum.counts", Abundance_data, Clinical)
+
+# Removing the NA value
+
+survoutput<- survoutput[complete.cases(survoutput),]
+
+# Creating the plot
+
+survoutput %>% 
+  ggplot(aes(x = percentile, y = -log10(pval), color = hazard.direction)) +
+  geom_line(lwd = 1) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") +
+  theme_bw()
+
+
+
+```
