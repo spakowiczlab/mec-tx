@@ -20,33 +20,22 @@ devtools::install_github("spakowiczlab/mt.surv")
 
 processed <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Lung_resampled_data.rds")
 
-## Some minor improvement
-
-processed_2 <- processed %>%
-  mutate(
-    Histology = case_when(
-      grepl("adenocarcinoma|Adenocarcinoma|acinar|papillary|lepidic|mucinous|minimally invasive", Histology, ignore.case = TRUE) ~ "Adenocarcinoma",
-      grepl("squamous cell|squamous|basaloid", Histology, ignore.case = TRUE) ~ "Squamous Cell Carcinoma",
-      grepl("neuroendocrine", Histology, ignore.case = TRUE) ~ "Neuroendocrine Carcinoma",
-      grepl("mesothelioma|sarcoma|seminoma|thymoma|malignant tumor|pleomorphic|paraganglioma|spindle", Histology, ignore.case = TRUE) ~ "Other Tumors",
-      TRUE ~ "Other Carcinoma"  # Any diagnosis not fitting the above
-    )) 
 
 ```
 
 ```{r}
 # mtsurv plot generation
 
-Clinical <- processed_2 %>%
+Clinical <- processed %>%
   select(sample, diagsurvtime, status) %>%
   dplyr::rename(vitalstatus = status) %>% mutate(days = as.numeric(diagsurvtime)) %>%
   select(-diagsurvtime,sample, days, vitalstatus)
 
 Clinical<-Clinical[,c(1,3,2)] # Make sure you look at the dataframe first to select the correct columns.
 
-Abundance_data<- processed_2 %>% select(sample,Normalize_Candida)
+Abundance_data<- processed %>% select(sample,Candida)
 
-survoutput <- mt.surv::survivalByQuantile("Normalize_Candida", Abundance_data, Clinical)
+survoutput <- mt.surv::survivalByQuantile("Candida", Abundance_data, Clinical)
 
 # Removing the NA value
 
@@ -62,34 +51,55 @@ survoutput %>%
   theme_bw()
 
 
-ggsave("/users/PAS1695/dipankor99/Github/exotho/exploratory/Figures/ORIEN_NSCLC2025/mtsurv_ORIEN_candida.png", height = 3, width = 6)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/ORIEN_NSCLC_candida_mtsurv.png", height = 3, width = 6)
 
 ```
-
 
 ```{r}
-Candia<- mtsurv_data_2 %>% filter(genus=="Candida")
+## KM plot with 75th quantile
 
-Clinical <- Candia %>%
-  select(sample, vitalstatus, days)
+# Compute sample sizes for each CAlevel group
+summary(processed$Candida)
 
-Abundance_data<- Candia %>% select(sample,sum.counts)
+# Select the best percentile based on mtsurv plot (which in this case is 75th)
 
-survoutput <- mt.surv::survivalByQuantile("sum.counts", Abundance_data, Clinical)
+processed <- processed %>%
+  mutate(CAlevel = if_else(Candida <= 1125.25  , "Low", "High")) %>%
+  mutate(CAlevel = factor(CAlevel, levels = c("Low", "High")))
 
-# Removing the NA value
+fit<- survfit(Surv(diagsurvtime, status)~CAlevel, data = processed)
 
-survoutput<- survoutput[complete.cases(survoutput),]
+p<-ggsurvplot(fit,
+              data = processed,
+              pval=T,
+              pval.coord = c(0.155, 0.2),
+              risk.table=T,
+              xlim = c(0, 5),
+              break.x.by = 1,
+              xlab="Time (years)",palette = 
+                c("#E7B800", "#2E9FDF"),# custom color palettes
+              conf.int = TRUE,
+              lwd=1.5,font.x = c(15, "bold"),
+              font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
+              font.legend = c(15),  # Two different colors for CI (light purple and light blue)
+              conf.int.alpha = 0.3,
+              legend.labs = c("Low Candida (n = 1142)","High Candida (n = 429 )"),
+              ggtheme = theme_bw(),
+              legend.title = "Abundance   ")
 
-# Creating the plot
+p$plot + 
+  labs(title = "NSCLC ORIEN") + 
+  theme(
+    legend.text = element_text(size = 9, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.position = c(0.72, .25),
+  )
 
-survoutput %>% 
-  ggplot(aes(x = percentile, y = -log10(pval), color = hazard.direction)) +
-  geom_line(lwd = 1) +
-  geom_hline(yintercept = -log10(0.05),
-             linetype = "dashed") +
-  theme_bw()
 
+## for normal savings
 
+ggsave(filename = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/ORIEN_NSCLC_kmplot_5years.png",
+       width = 6, height = 4)
 
 ```
+
