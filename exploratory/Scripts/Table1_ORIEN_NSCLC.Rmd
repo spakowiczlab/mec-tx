@@ -179,7 +179,7 @@ Metadata <- Predata %>%
 ## Fine Tuning the data set for analysis
 
 
-unknown_vals <- c("Unknown/Not Applicable","Unknown","Not Reported","NA","")
+unknown_vals <- c("Unknown/Not Applicable","Unknown","Not Reported","NA")
 
 Metadata <- Metadata %>%
   mutate(
@@ -199,7 +199,7 @@ Metadata <- Metadata %>%
 
     # specific recodes / level orders
     RadiationTherapyInd = factor(RadiationTherapyInd,
-                                 levels = c("No","Yes","Unknown")),
+                                 levels = c("No","Yes")),
     Primary_Met         = factor(Primary_Met,
                                  levels = c("Primary","Metastatic","Unknown")),
     Sex                 = factor(Sex,
@@ -209,7 +209,7 @@ Metadata <- Metadata %>%
     Histology           = factor(Histology,
                                  levels = c("Adenocarcinoma","Squamous Cell Carcinoma","Other","Unknown")),
     ProgRecurInd        = factor(ProgRecurInd,
-                                 levels = c("No","Yes","Unknown")),
+                                 levels = c("No","Progression","Recurrence","Unknown/Not Applicable")),
     Stage               = factor(Stage,
                                  levels = c("I","II","III","IV","Unknown")),
     # Race is already a factor; refactor to lock Unknown last (optional)
@@ -219,7 +219,7 @@ Metadata <- Metadata %>%
   mutate(BMI= as.numeric(BMI)) %>% mutate(Age= as.numeric(Age)) %>% 
   mutate(CAlevel = factor(CAlevel, levels=c("Low","High")))
   
-write_csv(Metadata,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.csv")
+write_rds(Metadata,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
 
 ### Tableone analysis
 
