@@ -1,0 +1,133 @@
+---
+title: "Forestplot_ORIEN_NSCLC"
+author: "Dipankor Dhrubo"
+date: "2025-09-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(tidyverse)
+library(survival)
+library(ggsurvfit)
+library(tidyr)
+library(dplyr)
+library(forcats)
+
+```
+
+```{r}
+#Loading Data
+
+metadata<- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+
+```
+
+```{r}
+## Running the Cox regression
+
+# Experiment 1: Including all the variables
+
+coxmodel<- coxph(Surv(diagsurvtime, status)~CAlevel+BMI+Age+Sex+ProgRecurInd+RadiationTherapyInd+Primary_Met+
+                 +Stage+SmokingStatus, data = metadata)
+
+coxresults <- broom::tidy(coxmodel, exponentiate = TRUE, conf.int = TRUE)
+summary(coxmodel)
+
+# Forestplot Creation for experiment 1
+
+coxresults <- coxresults %>%
+  mutate(term = forcats::fct_rev(term)) ## Making things in reverse order
+
+coxresults <- coxresults %>% filter(!term %in% 
+                                      c("SexUnknown",
+                                       "SmokingStatusUnknown",
+                                       "StageUnknown",
+                                       "ProgRecurIndUnknown/Not Applicable",
+                                       "Primary_MetUnknown")) %>%
+  mutate(pval_label = sprintf("p = %.3f", p.value)) # Defining 
+
+# Calculate a constant x-position to place all p-values
+x_position <- max(coxresults$conf.high, na.rm = TRUE) * 1.5
+
+# Create the forest plot
+ggplot(coxresults, aes(x = estimate, y = term)) +
+  geom_point(size = 1.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -.5, size = 3.5) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor", title = "Forest_Plot_All_Vars") +
+  theme_bw()
+
+```
+
+
+```{r}
+
+## Cleaning up for better visualization
+
+clean <- coxresults %>% 
+  mutate(clean.term = case_when(term == "CAlevelHigh" ~ "High Candida",
+                                term == "Age" ~ "Age",
+                                term == "BMI" ~ "BMI",
+                                term == "SmokingStatusCurrent" ~ "Current Smoker",
+                                term == "SmokingStatusFormer/Ever" ~ "Previous Smoker",
+                                term == "RadiationTherapyIndYes" ~ "Radiation",
+                                term == "SexMale" ~ "Sex - Male",
+                                term == "ProgRecurIndProgression" ~ "Tumor Progression",
+                                term == "ProgRecurIndRecurrence" ~ "Tumor Recurrence",
+                                term == "StageII" ~ "Stage II",
+                                term == "StageIII" ~ "Stage III",
+                                term == "StageIV" ~ "Stage IV",
+                                term == "Primary_MetMetastatic" ~ "Metastasis")) %>% 
+  mutate(clean.term = fct_relevel(clean.term,
+                                  "Age",
+                                  "BMI",
+                                  "Sex - Male",
+                                  "Radiation",
+                                  "Stage II",
+                                  "Stage III",
+                                  "Stage IV",
+                                  "Metastasis",
+                                  "Current Smoker",
+                                  "Previous Smoker",
+                                  "High Candida",
+                                  "Tumor Progression",
+                                  "Tumor Recurrence"
+                                  
+  ))
+
+clean <- clean %>%
+  mutate(pval_label = sprintf("p = %.3f", p.value))  
+
+clean <- clean %>%
+  mutate(clean.term = forcats::fct_rev(clean.term)) ## Making things in reverse order
+
+# Calculate a constant x-position to place all p-values
+x_position <- max(coxresults$conf.high, na.rm = TRUE) * 1.5
+
+# Create the forest plot
+clean <- clean %>%
+  dplyr::mutate(is_high = clean.term == "High Candida") ## to mark High candida explicitly in the plot
+
+ggplot(clean, aes(x = estimate, y = clean.term, color = is_high)) +
+  geom_point(size = 1.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -0.80, size = 5.5) +
+  scale_color_manual(values = c(`TRUE` = "red", `FALSE` = "black")) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor",
+       title = "ORIEN Lung Cancer Patient Survival by Demographics") +
+  theme_bw() +
+  theme(axis.text.x = element_text(face = "bold", size = 12),
+        axis.text.y = element_text(face = "bold", size = 12),
+        axis.title  = element_text(size = 14, face = "bold")) +
+  guides(color = "none")   # hide
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Forestplot_ORIEN_NSCLC.png", height = 6, width = 10)
+
+```
+
