@@ -213,7 +213,7 @@ res_sorted$delabel <- ifelse(res_sorted$Gene %in% top_genes$Gene, as.character(r
 Lung_cancer_DEG_result<- res_sorted
 
 ### Saving the Deseq2 result
-write_rds(Lung_cancer_DEG_result,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/DESeq_results_NSCLCORIEN2025_lowCAhighCA.rda")
+write_rds(Lung_cancer_DEG_result,"/fs/ess/PAS1695/projects/exotho/data/Digital_Twins/DESeq_results_NSCLCORIEN2025_lowCAhighCA.rda")
 
 
 # Volcano plot
