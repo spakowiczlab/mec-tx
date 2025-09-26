@@ -1,0 +1,406 @@
+---
+title: "DESeq2_Fgsea_NSCLCORIEN"
+author: "Dipankor Dhrubo"
+date: "2025-09-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library("tidyverse")
+library(survival)
+library(ggsurvfit)
+library(survminer)
+library(DESeq2)
+library(viridis)
+library(factoextra)
+library(BiocManager)
+library(ggrepel)
+library(data.table)
+library(msigdbr)
+library(fgsea)
+library(pheatmap)
+library(UpSetR)
+```
+
+```{r}
+
+## Loading the sample data
+Lung_metadata<- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% 
+  select(sample, CAlevel) %>% unique()
+
+```
+
+```{r}
+
+### Loading the expression files
+
+## Directing path where the expression data is stored
+
+cpath<- "/fs/ess/PAS1695/projects/exotho/data/All_Cancer_Gene_expression"
+
+Sample.files <- list.files(cpath, pattern = "\\.genes\\.results$", full.names = T)
+head(Sample.files)
+  
+expected_samples<- Lung_metadata$sample
+
+expected_expressions<-file.path(cpath, paste0(expected_samples, ".genes.results"))
+
+## To make sure we grab all the sample expression file location
+
+table(expected_expressions %in% Sample.files)
+
+valid_files <- expected_expressions[file.exists(expected_expressions)]
+names(valid_files) <- expected_samples[file.exists(expected_expressions)]
+
+
+########## Reading out expression data for selected cancers
+
+
+
+cancer_list<- unique(Clinical_data$Cancer)
+samples<- list()
+
+for (cancer in cancer_list) {
+  
+  samples[[cancer]] <- Clinical_data %>% filter(Cancer == cancer) %>% pull(sample) %>%
+    paste0(".genes.results")
+  
+  
+}
+
+
+######## Reading out count data for Lung cancer
+
+
+Expression_mat_lung <- map(valid_files, ~{
+  df <- read_tsv(.x, show_col_types = FALSE)
+  
+  # Rename gene_id to gene_symbol if needed
+  if ("gene_id" %in% colnames(df) && !"gene_symbol" %in% colnames(df)) {
+    colnames(df)[colnames(df) == "gene_id"] <- "gene_symbol"
+  }
+  
+  # Select only the needed columns
+  df %>% select(gene_symbol, count = expected_count)
+})
+
+
+
+Expression_mat_lung <- map(Expression_mat_lung, ~ {
+  .x %>%
+    group_by(gene_symbol) %>%
+    summarise(count = sum(count, na.rm = TRUE), .groups = "drop")
+})
+
+
+
+sample_names <- basename(valid_files) %>% sub("\\.genes\\.results$", "", .)
+
+# Step 2: Assign sample names as column names before joining
+Expression_mat_lung_named <- map2(
+  Expression_mat_lung,
+  sample_names,
+  ~{
+    colnames(.x)[2] <- .y  # Rename "count" to actual sample name
+    .x
+  }
+)
+
+lung_expression <- Expression_mat_lung_named[[1]]
+
+for (i in 2:length(Expression_mat_lung_named)) {
+  lung_expression <- left_join(lung_expression, Expression_mat_lung_named[[i]], by = "gene_symbol")
+}
+
+write_rds(lung_expression,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_Gene_Expression_data.rds")
+
+```
+
+```{r}
+#Loading the Lung gene expression data
+
+lung_expression<- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_Gene_Expression_data.rds")
+
+### DEG Analysis between high vs low
+
+### Starting with lung
+
+
+Lung_metadata<- Lung_metadata %>% column_to_rownames("sample")
+
+lung_expression<- lung_expression %>% column_to_rownames("gene_symbol")
+
+
+
+
+##### need to process one file that has ENST as their gene name
+
+SA<- read_tsv("/fs/ess/PAS1695/projects/exotho/data/All_Cancer_Gene_expression/FT-SA243679R.genes.results") %>% select(gene_id, expected_count)
+
+
+Gene_symbols<- read_csv("/fs/ess/PAS1695/projects/exotho/data/microbiomeRIG/key_gene-id-to-symbol.csv")
+
+
+SA<- SA %>% left_join(Gene_symbols, by= "gene_id") %>% 
+  select(gene_symbol,SA243679R= expected_count)
+
+colnames(SA)[2]<- "FT-SA243679R"
+
+SA<- SA %>% group_by(gene_symbol) %>%
+  summarise(count = sum(`FT-SA243679R`, na.rm = TRUE), .groups = "drop")
+
+lung_expression_2<- lung_expression %>% select(-`FT-SA243679R`)
+
+lung_expression_2<- lung_expression_2 %>% left_join(SA,by="gene_symbol")
+
+lung_expression_2<- lung_expression_2 %>% column_to_rownames("gene_symbol")
+colnames(lung_expression_2)[1844] <- "FT-SA243679R"
+
+### making Sure that column names in the expression file is in the same order as metadata sample column
+
+lung_expression_2<- lung_expression_2 %>% select(rownames(Lung_metadata))
+
+all(colnames(lung_expression_2) == rownames(Lung_metadata))
+lung_expression_2<- round(lung_expression_2)
+
+str(Lung_metadata)
+
+#####
+
+#Running DESeq2 analysis
+
+dds <- DESeqDataSetFromMatrix(countData = lung_expression_2,
+                              colData = Lung_metadata,
+                              design = ~ CAlevel)  # replace 'condition' with your metadata column
+
+dds <- DESeq(dds)
+
+
+## Extracting Deseq result
+res <- results(dds)
+res<- as.data.frame(res)
+
+## Filtering out significantly dysregulated genes
+
+
+res_sorted <- res[order(res$padj),]
+
+res_sorted<- as.data.frame(res_sorted)
+
+res_sorted$Expression<- "NO"
+res_sorted$Expression[res_sorted$log2FoldChange >= 0.8 & res_sorted$padj < 0.05] <- "UP"
+res_sorted$Expression[res_sorted$log2FoldChange <= -0.8 & res_sorted$padj < 0.05] <- "Down"
+
+res_sorted <- tibble::rownames_to_column(res_sorted, var = "Gene")
+
+
+### These codes are for labling purposes. You can ignore these
+top_up <- res_sorted %>%
+  filter(log2FoldChange > 0.8, padj < 0.05) %>%
+  arrange(padj) %>%
+  head(10)
+
+top_down <- res_sorted %>%
+  filter(log2FoldChange < -0.8, padj < 0.05) %>%
+  arrange(padj) %>%
+  head(10)
+
+# Combine the top genera for labeling
+top_genes <- rbind(top_up, top_down)
+
+res_sorted$delabel <- ifelse(res_sorted$Gene %in% top_genes$Gene, as.character(res_sorted$Gene), NA)
+Lung_cancer_DEG_result<- res_sorted
+
+### Saving the Deseq2 result
+write_rds(Lung_cancer_DEG_result,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/DESeq_results_NSCLCORIEN2025_lowCAhighCA.rda")
+
+
+# Volcano plot
+
+p1<- ggplot(data = Lung_cancer_DEG_result, aes(x = log2FoldChange, y = -log10(padj), col = Expression, label = delabel)) +
+  
+  # Add vertical and horizontal threshold lines
+  geom_vline(xintercept = c(-0.8, 0.8), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.05), col = "gray", linetype = 'dashed') + 
+  
+  # Scatter plot of points with custom colors
+  geom_point(size = 2) + 
+  
+  # Custom color scheme for differential expression categories
+  scale_color_manual(values = c("#00AFBB", "grey", "#bb0c00"), 
+                     labels = c("Downregulated", "Not significant", "Upregulated")) +
+  
+  # Limit the x and y axes to avoid infinite values
+  coord_cartesian(ylim = c(0, 150), xlim = c(-6, 4)) + 
+  
+  # Add custom labels and title
+  labs(color = 'Expression',
+       x = expression("log"[2]*"FC"),
+       y = expression("-log"[10]*"p-value"),
+       title = "Lung_cancer: Volcano Expression Plot (Low Candida vs. High Candida)") +
+  
+  # Customize x-axis breaks
+  scale_x_continuous(breaks = seq(-10, 10, 2)) +
+  
+  # Add text labels using geom_text_repel to prevent overlap
+  geom_text_repel(data = top_genes, aes(label = Gene), 
+                  size = 3, max.overlaps = Inf, box.padding = 0.5, 
+                  point.padding = 0.3, segment.size = 0.2, color = "black") +
+  
+  # Apply a clean theme
+  theme_bw()+
+  theme(axis.text.x = element_text(face = "bold",size = 12),
+        axis.title.x = element_text(face = "bold",size = 14),
+        axis.text.y = element_text(face = "bold",size = 12),
+        axis.title.y = element_text(face = "bold",size = 14)
+        )
+
+
+
+p1
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLCORIEN_DEG_plot.png", width = 8, height = 6)
+
+```
+
+
+
+```{r}
+
+## DGSEA analysis
+
+## #This is prepping the pathways for running the pathway analysis. 
+
+resPlot <- data.frame(res) %>% 
+  arrange(pvalue)
+
+
+msig.human <- msigdbr(species = "Homo sapiens") %>% 
+  dplyr::select(gs_collection, ncbi_gene, gs_name, gene_symbol, gs_description) %>%
+  dplyr::rename("pathname" = gs_name, "Genes" = gene_symbol, "desc" = gs_description,
+                "category" = gs_collection, "NCBI Entrez ID" = ncbi_gene)
+
+msig.hlmrk <- msig.human %>%
+  filter(category=="H") %>%
+  unique()
+
+hlmrk.paths <- msig.hlmrk %>%
+  dplyr::select(Genes, pathname) %>%
+  split(x = .$Genes, f = .$pathname)
+
+
+
+# res: DESeq2 results with columns log2FoldChange, pvalue, padj, stat, rownames = gene IDs
+
+# Pick STAT as ranking; map to SYMBOL (or keep ENSEMBL consistently with your pathways)
+
+
+# 0) Pull rowData into a plain data.frame
+rdf <- as.data.frame(rowData(dds))
+
+# 1) Try to find a symbol-like column
+candidate_cols <- c("SYMBOL","symbol","gene_name","external_gene_name","hgnc_symbol","GeneSymbol")
+sym_col <- intersect(candidate_cols, colnames(rdf))
+if (length(sym_col) > 0) {
+  SYMBOL_vec <- rdf[[sym_col[1]]]
+} else {
+  SYMBOL_vec <- NULL
+}
+
+# 2) If still NULL, try to map ENSEMBL -> SYMBOL (optional; comment out if you don't want extra deps)
+# remove version suffixes like ENSG00000141510.12
+ens <- sub("\\.\\d+$", "", rownames(dds))
+if (is.null(SYMBOL_vec)) {
+  # Option A: org.Hs.eg.db (works offline once installed)
+  # BiocManager::install("org.Hs.eg.db")
+  # library(org.Hs.eg.db); library(AnnotationDbi)
+  # SYMBOL_vec <- AnnotationDbi::mapIds(org.Hs.eg.db, keys = ens, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first")
+
+  # Option B: if you skip mapping, fall back to ENSEMBL as "SYMBOL"
+  SYMBOL_vec <- ens
+}
+
+# 3) Build res2 safely
+res2 <- as.data.frame(res) %>%
+  mutate(
+    gene   = rownames(res),
+    SYMBOL = SYMBOL_vec[match(gene, rownames(dds))]
+  ) %>%
+  filter(!is.na(stat), !is.na(SYMBOL)) %>%
+  group_by(SYMBOL) %>%
+  slice_max(order_by = abs(stat), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# 4) Ranking vector (named by SYMBOL to match hlmrk.paths)
+sigrank <- res2$stat
+names(sigrank) <- res2$SYMBOL
+sigrank <- sort(sigrank, decreasing = TRUE)
+set.seed(1); sigrank <- sigrank + rnorm(length(sigrank), sd = 1e-8)
+
+# Tiny jitter just to break exact matches; won’t change biology
+
+
+library(fgsea)
+
+set.seed(123)
+fg <- fgsea(
+  pathways      = hlmrk.paths,
+  stats         = sigrank,
+  minSize       = 15,
+  maxSize       = 500,
+  nPermSimple   = 10000,   # bump this; 20000–50000 if warnings persist
+  scoreType     = "std",   # try "pos"/"neg" if your ranks are strongly one-sided
+  eps           = 1e-50
+)
+
+## Saving the fgsea data
+
+write_rds(fg,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/FGSEA_NSCLCORIEN2025_lowCAhighCA.rda")
+
+dds.fgsea.sig_NSCLC <- fg %>%
+  filter(pval < 0.05) %>%
+  select(pathway, pval, padj, NES) %>% 
+  mutate(pathway = str_remove(pathway, "HALLMARK_"))
+
+barord.dds <- arrange(dds.fgsea.sig_NSCLC, NES)
+
+
+## Ploting the pathway
+
+Fgsea_figure<- dds.fgsea.sig_NSCLC %>%
+  mutate(pathway = fct_relevel(pathway, barord.dds$pathway)) %>%
+  ggplot(aes(x = pathway, y = NES)) +
+  geom_col(fill = "red") +
+  labs(
+    x = "",
+    y = "Normalized Enrichment Score (NES)",
+    title = "GSEA: Pathways Enriched in High vs. Low Candida",
+    subtitle = "Comparison by Candida Abundance Level"
+  ) +
+  coord_flip() +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    text = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(size = 10)
+  )
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/FGSEA_NSCLCORIEN2025_lowCAhighCA.png",Fgsea_figure, width = 8, height = 4)
+
+
+## Extracting Up regulated genes for Network analysis
+
+Up_genes<- res_sorted %>% filter(Expression == "UP") %>% pull(Gene)
+
+write_lines(
+  Up_genes,
+  "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Upregulated_genes.txt"
+)
+
+```
+
+
