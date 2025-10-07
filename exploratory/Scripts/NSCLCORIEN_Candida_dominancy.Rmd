@@ -1,0 +1,546 @@
+---
+title: "NSCLCORIEN Differential Microbial Abundance"
+author: "Dipankor Dhrubo"
+date: "2025-09-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Loading required packages
+library(tidyverse)
+library(survival)
+library(ggsurvfit)
+library(survminer)
+library(ggrepel)
+library(FactoMineR)
+library(factoextra)
+library(DESeq2)
+library(igraph)
+library(purrr)
+library(rlang)
+library(mt.surv)
+```
+
+```{r}
+# Read the file
+processed<- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% 
+  select(sample,Candida ,CAlevel, status, diagsurvtime) %>% unique()
+
+Abundance<- read_csv("/fs/ess/PAS1695/projects/exotho/data/THO_decontaminated-counts_taxonomy_2025-05-05.csv.gz") %>% select(-1)
+```
+
+```{r}
+# Summing microbial counts for each genus within each sample
+df_summed <- Abundance %>%
+  group_by(sample, genus) %>%
+  summarise(Total_Count = sum(counts, na.rm = TRUE), .groups = "drop")
+
+df_summed<- df_summed %>% filter(!genus == "g__Candida")
+
+# Transform to wide format for easier analysis
+df_wide <- df_summed %>%
+  pivot_wider(names_from = genus, values_from = Total_Count, values_fill = 0)
+
+# View transformed data
+head(df_wide)
+
+
+# Calculate non-zero counts per genus
+non_zero_counts <- colSums(df_wide[-1] > 0)
+
+# Calculate percentage of samples with non-zero counts
+non_zero_percentage <- non_zero_counts / nrow(df_wide) * 100
+
+# Inspect the distribution of non-zero percentages
+hist(non_zero_percentage, breaks = 50, main = "Non-Zero Percentages of Microbes", xlab = "Percentage")
+
+# Set a threshold (e.g., genera present in at least 10% of samples)
+min_samples <- nrow(df_wide) * 0.10
+
+# Filter out low-prevalence genera
+filtered_df <- df_wide %>%
+  select(sample, where(~ sum(. > 0) >= min_samples))
+
+# Check the new dimensions after filtering
+dim(filtered_df)
+
+
+```
+
+```{r}
+### Preparatory work DESeq2
+
+## Making sure we are only working with NSCLC patients
+
+filtered_df_2<- filtered_df[filtered_df$sample %in% processed$sample,] %>% 
+  left_join(processed %>% select(sample,CAlevel,Candida),by = "sample") 
+
+clinical<- filtered_df_2 %>% select(sample, CAlevel)
+
+filtered_df_2<- filtered_df_2[, -c(163,164)] #  Forgot what I removed here. But nothing important
+
+
+# Transpose the data and keep the first column as row names
+transposed_df <- as.data.frame(t(filtered_df_2[-1]))  # Exclude sample column during transpose
+
+# Rename columns with sample names
+colnames(transposed_df) <- filtered_df_2$sample
+clinical<- clinical %>% column_to_rownames("sample")
+
+# Check the transposed data
+head(transposed_df)
+
+transposed_df<- transposed_df %>% select(rownames(clinical))
+
+all(colnames(transposed_df) == rownames(clinical)) ## Make sure this holds true.
+
+```
+
+```{r}
+## Differential microbial abundance
+
+# Prepare DESeq2 dataset
+dds <- DESeqDataSetFromMatrix(countData = transposed_df,
+                              colData = clinical,
+                              design = ~ CAlevel)
+
+# Run DESeq2 analysis
+dds <- DESeq(dds)
+res <- results(dds)
+```
+
+```{r}
+
+## Processing the deseq2 output file
+
+# View top differentially abundant genera
+res_sorted <- res[order(res$pvalue),]
+
+res_sorted<- as.data.frame(res_sorted)
+
+res_sorted$Abundance<- "NO"
+res_sorted$Abundance[res_sorted$log2FoldChange >= 0.8 & res_sorted$padj < 0.05] <- "UP"
+res_sorted$Abundance[res_sorted$log2FoldChange <= -0.8 & res_sorted$padj < 0.05] <- "Down"
+
+res_sorted <- tibble::rownames_to_column(res_sorted, var = "Genus")
+```
+
+```{r}
+### These codes are for labling purposes. You can ignore these
+top_up <- res_sorted %>%
+  filter(log2FoldChange > 1, padj < 0.05) %>%
+  arrange(padj) %>%
+  head(10)
+
+top_down <- res_sorted %>%
+  filter(log2FoldChange < -1, padj < 0.05) %>%
+  arrange(padj) %>%
+  head(10)
+
+# Combine the top genera for labeling
+top_genera <- rbind(top_up, top_down)
+
+res_sorted$delabel <- ifelse(res_sorted$log2FoldChange %in% top_genera$log2FoldChange, as.character(res_sorted$Genus), NA)
+```
+
+```{r}
+
+# Volcano plot
+
+ggplot(data = res_sorted, aes(x = log2FoldChange, y = -log10(padj), col = Abundance, label = delabel)) +
+  
+  # Add vertical and horizontal threshold lines
+  geom_vline(xintercept = c(-1, 1), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.05), col = "gray", linetype = 'dashed') + 
+  
+  # Scatter plot of points with custom colors
+  geom_point(size = 2) + 
+  
+  # Custom color scheme for differential expression categories
+  scale_color_manual(values = c("#00AFBB", "grey", "#bb0c00"), 
+                     labels = c("Downregulated", "Not significant", "Upregulated")) +
+  
+  # Limit the x and y axes to avoid infinite values
+  coord_cartesian(ylim = c(0, 150), xlim = c(-4, 4)) + 
+  
+  # Add custom labels and title
+  labs(color = 'Abundance',
+       x = expression("log"[2]*"FC"),
+       y = expression("-log"[10]*"p-value"),
+       title = "Volcano Plot (Low Candida vs. High Candida)") +
+  
+  # Customize x-axis breaks
+  scale_x_continuous(breaks = seq(-10, 10, 2)) +
+  
+  # Add text labels using geom_text_repel to prevent overlap
+  geom_text_repel(data = top_genera, aes(label = Genus), 
+                  size = 3, max.overlaps = Inf, box.padding = 0.5, 
+                  point.padding = 0.3, segment.size = 0.2, color = "black") +
+  
+  # Apply a clean theme
+  theme_bw()+
+  theme(axis.text.x = element_text(face = "bold",size = 12),
+        axis.title.x = element_text(face = "bold",size = 14),
+        axis.text.y = element_text(face = "bold",size = 12),
+        axis.title.y = element_text(face = "bold",size = 14)
+        )
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLCORIEN_Differential_microbes_lowCAvshighCA.png", width = 8, height = 6)
+write_rds(res_sorted,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Differential_microbes_result.rda")
+
+```
+
+
+
+```{r}
+
+
+# Select up-regulated and down-regulated microbes
+top_up <- res_sorted %>%
+  filter(Abundance == "UP")
+
+top_down <- res_sorted %>%
+  filter(Abundance == "Down")
+
+# Combine significant microbes
+top_microbes <- rbind(top_up, top_down)
+
+# Preparing file for only significant microbes
+
+top_genera<- top_microbes$Genus
+
+
+Up_down_microbe <- df_wide %>%
+  select(sample, all_of(top_genera))
+
+
+Final_microbe_surv<- Up_down_microbe %>% left_join(processed %>% 
+                                                     select(sample,Candida),
+                                                   by="sample") %>% dplyr::rename(g__Candida = Candida) %>% unique()
+ 
+samples<- Final_microbe_surv$sample
+Final_microbe_surv<- Final_microbe_surv[,-1]
+
+
+
+#Co-abundance network creation
+
+## Preparing data. Taking only the count the for significant microbes
+
+abundance_matrix <- as.data.frame(Final_microbe_surv)
+rownames(abundance_matrix) <- samples
+
+# ensure numeric
+abundance_matrix[] <- lapply(abundance_matrix, function(x) as.numeric(as.character(x)))
+
+# 1) Normalize to relative abundance ----------------------------------
+abundance_rel <- sweep(abundance_matrix, 1, rowSums(abundance_matrix), FUN = "/")
+abundance_rel[is.na(abundance_rel)] <- 0  # rows that summed to 0
+
+# OPTIONAL: prevalence filter to reduce ties/noise (e.g., present in ≥ 5% samples)
+prev <- colMeans(abundance_rel > 0)
+keep <- prev >= 0.05
+abundance_rel <- abundance_rel[, keep, drop = FALSE]
+
+# 2) Build all pairs ---------------------------------------------------
+microbes <- colnames(abundance_rel)
+all_pairs <- combn(microbes, 2)
+
+# 3) Spearman for each pair (asymptotic p-values to avoid tie warnings) ----
+cor_results <- apply(all_pairs, 2, function(pair) {
+  x <- abundance_rel[, pair[1]]
+  y <- abundance_rel[, pair[2]]
+  ct <- suppressWarnings(cor.test(x, y,
+                                  method = "spearman",
+                                  use = "pairwise.complete.obs",
+                                  exact = FALSE))
+  c(source = pair[1], target = pair[2],
+    rho = unname(ct$estimate), pval = ct$p.value,
+    n = sum(stats::complete.cases(x, y)))
+})
+
+# Step 3: Convert to data frame
+cor_df <- as.data.frame(t(cor_results), stringsAsFactors = FALSE)
+cor_df <- cor_df %>%
+  mutate(rho  = as.numeric(rho),
+         pval = as.numeric(pval),
+         n    = as.numeric(n),
+         padj = p.adjust(pval, method = "BH")) %>%
+  arrange(padj, desc(abs(rho)))
+
+head(cor_df)
+
+# Step 5: Optional filtering (e.g., |rho| ≥ 0.5 & padj < 0.05)
+cor_filtered <- cor_df %>%
+  filter(abs(rho) >= 0.2, padj < 0.05)
+
+# View top hits
+head(cor_filtered)
+
+cor_filtered_2 <- cor_df %>%
+  filter(abs(rho) >= 0.5, padj < 0.05)
+
+
+## This plot will give the idea which rho should be used as threshold for next analysis
+
+ggplot(cor_df, aes(x = rho, y = -log10(padj))) +
+  geom_point(alpha = 0.6, color = "darkblue") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "green") +
+  labs(x = "Spearman ρ", y = "-log10(adjusted p-value)",
+       title = "adjP vs Rho") + ylim(-100, 500)+
+  theme_minimal()
+
+ggsave("/users/PAS1695/dipankor99/Github/exotho/exploratory/Figures/
+       ORIEN_NSCLC2025/Pval_vs_rho.png", height = 10, width = 8)
+
+
+# 0.5 is considered as a threshold to reduce noise
+
+cor_threshold <- 0.4
+# choose which table you want (be consistent!)
+M <- abundance_matrix   # or abundance_rel
+
+# columns = microbes
+cor_matrix <- cor(abundance_rel, method = "spearman", use = "pairwise.complete.obs")
+
+
+# Use the absolute value of correlations to avoid negative weights
+adjacency_matrix <- abs(cor_matrix) * (abs(cor_matrix) >= cor_threshold)
+
+# Remove self-correlations (diagonal)
+diag(adjacency_matrix) <- 0
+
+# Convert to an edge list
+cor_edges <- as.data.frame(as.table(adjacency_matrix))
+cor_edges <- cor_edges %>%
+  filter(Freq > cor_threshold) %>%
+  dplyr::rename(source = Var1, target = Var2, weight = Freq) %>%
+  distinct(source, target, .keep_all = TRUE)  # Remove duplicates
+
+# Check the resulting edge list
+head(cor_edges)
+
+# Load required packages
+library(igraph)
+
+network <- graph_from_data_frame(d = cor_edges, directed = FALSE)
+
+# Add node attributes (degree centrality)
+V(network)$degree <- degree(network)
+
+# Check the network structure
+print(network)
+
+
+# Generate a simplified network plot
+set.seed(42)  # For reproducibility
+
+# Simplify the network by removing multiple and loop edges
+simple_network <- simplify(network, remove.multiple = TRUE, remove.loops = TRUE)
+
+# Calculate degree centrality for node size
+V(simple_network)$size <- degree(simple_network)
+
+# Set colors: red for Candida, blue for other microbes
+V(simple_network)$color <- ifelse(V(simple_network)$name == "g__Candida", "red", "skyblue")
+
+# Highlight hubs (nodes with high degree)
+hub_threshold <- mean(degree(simple_network)) + sd(degree(simple_network))
+V(simple_network)$label <- ifelse(V(simple_network)$size > hub_threshold | V(simple_network)$name == "g__Candida", V(simple_network)$name, NA)
+
+#######################
+
+####################
+
+# Plot the microbial co-abundance network with all microbe names
+# Plot the microbial co-abundance network with labels slightly moved upwards
+# Plot the microbial co-abundance network with closer components
+
+
+library(Cairo)
+
+CairoPNG("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLCORIEN_Candida_network.png",
+         width = 10, height = 12, units = "in", dpi = 300)
+
+set.seed(1)
+lay <- layout_with_fr(simple_network)
+plot(simple_network, layout = lay, vertex.size = 5,
+     vertex.color = V(simple_network)$color,
+     vertex.label = V(simple_network)$name,
+     vertex.label.cex = 0.8, vertex.label.color = "black",
+     vertex.label.dist = 1.5, vertex.label.degree = -pi/2,
+     edge.color = "gray", edge.width = 0.5,
+     main = "Co-Abundance Network (|ρ| ≥ 0.4, padj < 0.05)")
+dev.off()
+
+
+```
+
+
+```{r}
+######### For Non candida module (module where candida is absent)
+
+# Get Candida's module ID
+modules <- cluster_louvain(simple_network)
+
+# Assign microbe names to the membership vector
+names(modules$membership) <- V(simple_network)$name
+modules$membership
+
+names(modules$membership)
+# Get the module of Candida
+candida_module_id <- modules$membership["g__Candida"]
+
+# Get Module 2 (non-Candida)
+non_candida_module_id <- setdiff(unique(modules$membership), candida_module_id)
+
+# Microbes in Module 2
+non_candida_module_members <- names(modules$membership)[modules$membership %in% non_candida_module_id]
+
+module_score_df_2 <- abundance_rel %>%
+  select(all_of(non_candida_module_members)) %>%
+  mutate(module_score = rowSums(across(everything()), na.rm = TRUE)) %>%
+  tibble::rownames_to_column("sample")
+
+Final_microbe_surv<- Up_down_microbe %>% left_join(processed %>% 
+                                                     select(sample,Candida, diagsurvtime, status,CAlevel),
+                                                   by="sample") %>% dplyr::rename(g__Candida = Candida) %>% unique()
+
+merged_df_2 <- Final_microbe_surv %>%
+  select(sample, diagsurvtime, status,CAlevel) %>%
+  left_join(module_score_df_2, by = "sample")
+
+
+
+# Model: Module score + Candida level
+cox_module <- coxph(Surv(diagsurvtime, status) ~ module_score + CAlevel, data = merged_df_2)
+
+
+```
+
+
+```{r}
+
+## Forest plot 
+
+coxresults <- broom::tidy(cox_module, exponentiate = TRUE, conf.int = TRUE)
+summary(cox_module)
+
+
+coxresults <- coxresults %>%
+  mutate(term = forcats::fct_rev(term)) ## Making things in reverse order
+
+coxresults <- coxresults %>%
+  mutate(pval_label = sprintf("p = %.3f", p.value)) %>%
+  mutate(term = recode(term,
+                       "module_score"  = "Module Score",
+                       "CAlevelHigh" = "Candida (High vs Low, ref=Low)"))
+
+
+# Calculate a constant x-position to place all p-values
+x_position <- max(coxresults$conf.high, na.rm = TRUE) * 1.5
+
+# Create the forest plot
+ggplot(coxresults[-56,], aes(x = estimate, y = term)) +
+  geom_point(size = 1.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -.25, size = 3.5) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor", title = "ORIEN Microbial Abundance") +
+  theme_bw()+theme(axis.text.x = element_text(face="bold", size=12),
+                   axis.text.y = element_text(face="bold", size=12),
+                   axis.title=element_text(size=14,face="bold"))
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/NSCLCORIEN_Forestplot_Candida_vs_all.png", height = 5, width = 7)
+
+```
+
+
+```{r}
+## Trying something new
+
+df <- merged_df_2 %>%
+  mutate(
+    CAlevel = factor(CAlevel, levels = c("Low","High")),
+    module_z = as.numeric(scale(module_me1 %||% module_score))  # z-score the module
+  ) %>%
+  select(diagsurvtime, status, CAlevel, module_z) %>%
+  na.omit()
+
+SurvObj <- with(df, Surv(diagsurvtime, status))
+
+## Fit the three nested models
+
+# M0: CA only
+m0 <- coxph(SurvObj ~ CAlevel, data = df)
+
+# M1: non-Candida module only
+m1 <- coxph(SurvObj ~ module_z, data = df)
+
+# M2: CA + non-Candida module
+m2 <- coxph(SurvObj ~ CAlevel + module_z, data = df)
+
+##Likelihood-ratio tests (nested comparisons)
+
+# Does adding CA to the module improve fit? compare M1 vs M2
+
+# Does adding the module to CA improve fit? compare M0 vs M2
+
+lrt_CA_adds_value      <- anova(m1, m2, test = "LRT")  # CA on top of module
+lrt_module_adds_value  <- anova(m0, m2, test = "LRT")  # module on top of CA
+
+lrt_CA_adds_value
+lrt_module_adds_value
+
+# Harrell’s C-index and ΔC: It’s the survival-version of AUC. It asks: for two patients, does the model give a higher risk to the one who dies first?
+# Range: 0.5 = no better than chance; 1.0 = perfect ranking.
+
+##ΔC (delta C-index) : The change in C-index when you add (or remove) a predictor.
+
+# Example: C goes from 0.502 → 0.515 when adding Candida ⇒ ΔC = +0.013.
+
+# If ΔC > 0, the added variable improves discrimination (how well the model ranks risk). If ~0, it adds little.
+
+get_c <- function(fit) unname(summary(fit)$concordance[1])
+
+c0 <- get_c(m0)  # CA only
+c1 <- get_c(m1)  # module only
+c2 <- get_c(m2)  # CA + module
+
+deltaC_CA_over_module     <- c2 - c1
+deltaC_module_over_CA     <- c2 - c0
+
+tibble(
+  model = c("M0: CA only","M1: module only","M2: CA + module"),
+  C_index = c(c0, c1, c2),
+  deltaC_vs_prev = c(NA, c1 - c0, c2 - c1)
+)
+### Bootstrap C-index ΔC with CIs
+
+set.seed(1)
+B <- 500
+boot_dc_CA  <- numeric(B)
+boot_dc_mod <- numeric(B)
+
+n <- nrow(df)
+for (b in 1:B) {
+  idx <- sample(seq_len(n), replace = TRUE)
+  dB  <- df[idx, ]
+  S   <- with(dB, Surv(diagsurvtime, status))
+  m0B <- coxph(S ~ CAlevel, data = dB)
+  m1B <- coxph(S ~ module_z, data = dB)
+  m2B <- coxph(S ~ CAlevel + module_z, data = dB)
+  c0B <- get_c(m0B); c1B <- get_c(m1B); c2B <- get_c(m2B)
+  boot_dc_CA[b]  <- c2B - c1B
+  boot_dc_mod[b] <- c2B - c0B
+}
+quantile(boot_dc_CA,  probs = c(.025,.5,.975))    # ΔC when adding CA
+quantile(boot_dc_mod, probs = c(.025,.5,.975))    # ΔC when adding module
+
+
+## Interpretation: Adding Candida to the module increased C-index by ~0.01 (95% CI −0.006 to 0.033); adding the module to Candida changed C by ~0.005 (95% CI −0.004 to 0.019). Likelihood-ratio tests favored models including Candida (p≈0.02). Thus, Candida carries the prognostic signal, while the non-Candida module adds minimal discrimination.
+
+```
+
