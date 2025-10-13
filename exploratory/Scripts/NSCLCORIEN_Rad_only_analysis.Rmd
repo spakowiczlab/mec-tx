@@ -1,0 +1,178 @@
+---
+title: "Radiation_only_Analysis_NSCLCORIEN"
+author: "Dipankor Dhrubo"
+date: "2025-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(survival)
+library(ggsurvfit)
+library(survminer)
+library(patchwork)
+library(readr)
+library(broom)
+library(coxphf)
+library(forcats)
+library(stringr)
+```
+
+
+```{r}
+
+### Loading Radiation only patients dataset
+
+Radiation_data<- readRDS(file= "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") |>
+  filter(RadiationTherapyInd == "Yes")
+
+
+
+```
+
+# KMplot CRC radiation patients
+
+
+```{r}
+
+fit<- survfit(Surv(diagsurvtime, status)~CAlevel, data = Radiation_data)
+fit$strata
+
+ggsurvplot(fit,
+               # data = Radiation_surv_data,
+               pval=T,
+               pval.coord = c(0.155, 0.2),
+               risk.table=F,
+               xlab="Time (years)",palette =
+                 c("#E7B800", "#2E9FDF"),# custom color palettes
+               conf.int = TRUE,
+               lwd=1.5,font.x = c(15, "bold"),
+               font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
+               font.legend = c(15),  # Two different colors for CI (light purple and light blue)
+               conf.int.alpha = 0.3,
+               xlim=c(0, 10),
+               break.x.by= 1,
+               #legend.labs = c("Low Candida (n = 981)","High Candida (n = 341 )"),
+               ggtheme = theme_bw(),
+               legend.title = "Abundance   ")+
+   labs(title = "Normalize Count Kmplot")
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/orien-nsclc_rad-only_ca.svg",
+       height = 4, width = 6)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/orien-nsclc_rad-only_ca.png",
+       height = 4, width = 5.9)
+
+```
+
+```{r}
+##Optional figure
+km <- 
+  survfit2(Surv(diagsurvtime, status) ~ CAlevel,
+           data = Radiation_data) |>
+  ggsurvfit(linewidth = 1) +
+  labs(title = "",
+       x = "Time (Years)", y = "Survival (%)") +
+  theme_bw(base_size = 9) +
+  theme(
+    legend.position = c(0.325, 0.2)
+  ) +
+  add_confidence_interval() +
+  scale_ggsurvfit() +
+  xlim(0, 10) +
+  scale_color_viridis_d()
+
+
+km
+
+ggsave("../figures/orien-crc_rad-only_ca.svg",
+       height = 2, width = 2.8)
+ggsave("../figures/orien-crc_rad-only_ca.png",
+       height = 2, width = 2.6)
+```
+
+```{r}
+km + 
+  add_pvalue()
+
+ggsave("../figures/orien-crc_rad-only_ca_w-pval.png",
+       height = 3, width = 4)
+
+```
+
+
+# Cox Regression and forestplot
+
+```{r}
+
+df <- 
+  Radiation_data %>%
+  filter(complete.cases(diagsurvtime, status, Age, BMI, CAlevel, Stage, Sex)) |> 
+  filter(!Stage == "Unknown") |> 
+  filter(!BMI == "Unknown/Not Applicable") |> 
+  filter(!Sex == "Unknown") |> 
+  mutate(stage = if_else(grepl("^I$|^II$", Stage),
+                         true = "Early", 
+                         false = "Advanced Disease"),
+         BMI = as.numeric(BMI)) |> 
+  mutate(stage = fct_relevel(stage, "Early"))
+
+```
+
+
+```{r}
+
+fit.multi <- coxph(Surv(diagsurvtime, status) ~ CAlevel + Age + BMI + stage + Sex, 
+                    data = df)
+
+summary(fit.multi)
+
+```
+
+```{r}
+coxresults <- broom::tidy(fit.multi, exponentiate = TRUE, conf.int = TRUE)
+
+
+# Forestplot Creation
+
+coxresults <- coxresults %>% filter(term != "SexUnknown") |>
+  mutate(term = forcats::fct_rev(term)) ## Making things in reverse order
+
+coxresults <- coxresults %>%
+  mutate(pval_label = sprintf("p = %.3f", p.value)) # Defining 
+
+
+coxresults_labeled <- coxresults %>%
+  mutate(term = as.character(term)) %>%
+  mutate(
+    term = str_replace(term, "^CAlevel", "Candida Abundance: "),
+    term = str_replace(term, "^stage",   "Stage: "),
+    term = str_replace(term, "^Sex",     "Sex: "),
+    term = str_replace(term, "^Age",     "Age: "),
+    term = str_replace(term, "^BMI",     "BMI: ")
+  ) %>%
+  mutate(term = factor(term))
+
+
+# Calculate a constant x-position to place all p-values
+x_position <- max(coxresults_labeled$conf.high, na.rm = TRUE) * 1.5
+
+# Create the forest plot
+ggplot(coxresults_labeled, aes(x = estimate, y = term)) +
+  geom_point(size = 1.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -.25, size = 3.5) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor", title = "ORIEN_NSCLC: Radiation Treated Patients") +
+  theme_bw()+theme(axis.text.x = element_text(face="bold", size=12),
+                   axis.text.y = element_text(face="bold", size=12),
+                   axis.title=element_text(size=10,face="bold"))
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Forestplot_Radiationpatients_NSCLC.svg", 
+       height = 4, width = 7)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Forestplot_Radiationpatients_NSCLC.png", 
+       height = 4, width = 6.7)
+```
+
+
