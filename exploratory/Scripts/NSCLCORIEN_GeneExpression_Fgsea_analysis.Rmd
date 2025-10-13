@@ -113,14 +113,14 @@ for (i in 2:length(Expression_mat_lung_named)) {
   lung_expression <- left_join(lung_expression, Expression_mat_lung_named[[i]], by = "gene_symbol")
 }
 
-write_rds(lung_expression,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_Gene_Expression_data.rds")
+write_rds(lung_expression,"/fs/ess/PAS1695/projects/exotho/data/Digital_Twins/NSCLC_Gene_Expression_data.rds")
 
 ```
 
 ```{r}
 #Loading the Lung gene expression data
 
-lung_expression<- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_Gene_Expression_data.rds")
+lung_expression<- readRDS("/fs/ess/PAS1695/projects/exotho/data/Digital_Twins/NSCLC_Gene_Expression_data.rds")
 
 ### DEG Analysis between high vs low
 

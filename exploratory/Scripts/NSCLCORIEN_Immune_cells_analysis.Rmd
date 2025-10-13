@@ -1,0 +1,202 @@
+---
+title: "ORIEN_CIBERSOTX_NSCLC2025"
+author: "Dipankor Dhrubo"
+date: "2025-10-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library("tidyverse")
+library(survival)
+library(ggsurvfit)
+library(survminer)
+```
+
+
+```{r}
+# Loading data
+
+lung_expression<- read_tsv("/fs/ess/PAS1695/projects/exotho/data/microbiomeRIG/THO_TPM.txt")
+Metadata<- readRDS(file= "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+Gene_symbol<- read_csv("/fs/ess/PAS1695/projects/exotho/data/microbiomeRIG/key_gene-id-to-symbol.csv")
+
+##
+lung_expression<- lung_expression %>% left_join(Gene_symbol, by="gene_id") %>% select(-gene_id)
+# 1) Keep rows with a gene symbol
+keep <- !is.na(lung_expression$gene_symbol) & lung_expression$gene_symbol != ""
+
+# 2) Build a numeric matrix of expression only
+expr <- lung_expression[keep, setdiff(names(lung_expression), "gene_symbol"), drop = FALSE]
+# Force to numeric in case some columns are characters
+expr[] <- lapply(expr, function(x) suppressWarnings(as.numeric(x)))
+mat <- as.matrix(expr)
+
+# 3) Collapse duplicates by SUM using rowsum
+g <- lung_expression$gene_symbol[keep]
+lung_expression2 <- rowsum(mat, group = g)  # genes x samples matrix
+
+# 4) If you need a data.frame:
+lung_expression2 <- as.data.frame(lung_expression2)
+
+colnames(lung_expression2) <- sub("\\.genes\\.results$", "", colnames(lung_expression2))
+samples<- unique(Metadata$sample)
+
+lung_expression2<- lung_expression2 %>% select(all_of(samples))
+
+
+#### CibersortX Immune cell analysis
+
+gene_matrix1 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1:201)
+
+
+write.table(gene_matrix1, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix1.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix2 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,202:401)
+
+write.table(gene_matrix2, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix2.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix3 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,402:601)
+
+write.table(gene_matrix3, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix3.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix4 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,602:801)
+
+write.table(gene_matrix4, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix4.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix5 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,802:946)
+
+write.table(gene_matrix5, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix5.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix6 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,947:1334)
+
+write.table(gene_matrix6, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix6.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix7 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,1335:1536)
+
+write.table(gene_matrix7, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix7.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+
+gene_matrix8 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,1537:1737)
+
+write.table(gene_matrix8, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix8.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+gene_matrix9 <- 
+  lung_expression2 %>% 
+  rownames_to_column("GeneSymbol") %>% 
+  select(1,1738:1844)
+
+write.table(gene_matrix9, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/cibersortx_input_matrix9.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+
+```
+
+```{r}
+#calling in outputs
+
+matrix1 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input1_Results.csv")
+matrix2 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input2_Results.csv")
+matrix3 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input3_Results.csv")
+matrix4 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input4_Results.csv")
+matrix5 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input5_Results.csv")
+matrix6 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input6_Results.csv")
+matrix7 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input7_Results.csv")
+matrix8 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input8_Results.csv")
+matrix9 <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/CIBERSORTx_input9_Results.csv")
+immune_matrix <- rbind(matrix1, matrix2, matrix3, matrix4, matrix5, matrix6,matrix7,matrix8,matrix9)
+
+saveRDS(object = immune_matrix,
+        file = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/immune_deconvolveORIEN.RDS")
+
+
+
+
+immune_deconvolution <- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/immune_deconvolveORIEN.RDS") %>% 
+  rename_with(~ "sample", .cols = matches("Mixture")) %>% 
+  select(-c("P-value", "Correlation", "RMSE")) %>% 
+  pivot_longer(
+    cols = -sample,                
+    names_to = "ImmuneCell",       
+    values_to = "Abundance"        
+  )
+
+
+## Prepping for the analysis
+
+joindf <- Metadata %>% select(sample,CAlevel) %>% unique()
+
+plotdf <- immune_deconvolution %>% 
+  left_join(joindf, by = "sample")
+
+
+wilcox_results <- plotdf %>%
+  group_by(ImmuneCell) %>%
+  summarise(
+    p_value = wilcox.test(Abundance ~ CAlevel)$p.value,
+    .groups = "drop"
+  ) 
+
+sig_cells <- wilcox_results %>%
+  filter(p_value < 0.05) %>% filter(! ImmuneCell == "T cells regulatory (Tregs)")
+```
+
+
+```{r}
+
+### Plot visualization
+
+ggplot(plotdf[plotdf$ImmuneCell %in% sig_cells$ImmuneCell,], 
+       aes(x = CAlevel, y = Abundance, fill = CAlevel)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  facet_wrap(~ ImmuneCell, scales = "free_y", ncol = 4) +
+  stat_compare_means(method = "wilcox.test", label = "p.format", size = 3) +  # Add p-values
+  scale_fill_manual(values = c("Low" = "#00BFC4", "High" = "#F8766D")) +
+  theme_bw(base_size = 12) +
+  labs(title = "Immune Cell Fractions by Candida Level",
+       x = "Candida Level", y = "Fraction") +
+  theme(strip.text = element_text(face = "bold", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Immune_cells_NSCLC.png", 
+       width = 13, height = 8)
+
+
+```
+
+
+## Result Interpretation: 
+
+NK cells kill stressed/“non-self” targets without prior priming and shape early anti-tumor immunity (e.g., by secreting IFN-γ and licensing DCs).
+
+CD8⁺ T cells are the main cytotoxic lymphocytes that clear tumor cells after antigen recognition; their abundance/activation strongly correlates with better prognosis and response to IO.
+
+So the observed drop in activated NK and CD8 T cells in Candida-High tumors suggests a shift toward a less cytotoxic, less surveillance-competent microenvironment. That fits your other signals:
+
+M0 macrophages ↑ and mast cells resting ↑ → more immature/myeloid-skewed, potentially immunosuppressive milieu.
+
+CD4 memory activated ↑ with CD8 ↓ → “inflamed but ineffective” pattern seen in exhausted/immune-excluded tumors.
+
+Mechanistically, Candida (and hypoxia it may reinforce) could drive IL-6/STAT3, TNF/NF-κB, and metabolic competition → T-cell/NK dysfunction, poor antigen presentation, and resistance to chemo/RT/IO.

@@ -1,0 +1,261 @@
+---
+title: "Dectin1_TMEsig_Analysis_NSCLCORIEN"
+author: "Dipankor Dhrubo"
+date: "2025-10-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library("tidyverse")
+library(survival)
+library(ggsurvfit)
+library(survminer)
+library(DESeq2)
+library(viridis)
+library(factoextra)
+library(BiocManager)
+library(ggrepel)
+library(ggpubr)
+library(tmesig)
+
+
+```
+
+```{r}
+# load Files
+lung_expression<- read_tsv("/fs/ess/PAS1695/projects/exotho/data/microbiomeRIG/THO_counts.txt")
+Metadata<- readRDS(file= "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>%
+  select(sample, CAlevel) %>% unique()
+Gene_symbol<- read_csv("/fs/ess/PAS1695/projects/exotho/data/microbiomeRIG/key_gene-id-to-symbol.csv")
+
+
+##
+lung_expression<- lung_expression %>% left_join(Gene_symbol, by="gene_id") %>% select(-gene_id)
+# 1) Keep rows with a gene symbol
+keep <- !is.na(lung_expression$gene_symbol) & lung_expression$gene_symbol != ""
+
+# 2) Build a numeric matrix of expression only
+expr <- lung_expression[keep, setdiff(names(lung_expression), "gene_symbol"), drop = FALSE]
+# Force to numeric in case some columns are characters
+expr[] <- lapply(expr, function(x) suppressWarnings(as.numeric(x)))
+mat <- as.matrix(expr)
+
+# 3) Collapse duplicates by SUM using rowsum
+g <- lung_expression$gene_symbol[keep]
+lung_expression2 <- rowsum(mat, group = g)  # genes x samples matrix
+
+# 4) If you need a data.frame:
+lung_expression2 <- as.data.frame(lung_expression2)
+
+colnames(lung_expression2) <- sub("\\.genes\\.results$", "", colnames(lung_expression2))
+samples<- unique(Metadata$sample)
+
+lung_expression2<- lung_expression2 %>% select(all_of(samples)) %>% round()
+Metadata<- Metadata %>% column_to_rownames("sample")
+
+all(colnames(lung_expression2) == rownames(Metadata))
+
+### Doing VST transformation to normalize the count data
+
+dds <- DESeqDataSetFromMatrix(countData = lung_expression2, colData = Metadata, design = ~ CAlevel)
+dds <- estimateSizeFactors(dds)
+vst_mat <- assay(vst(dds, blind = TRUE))
+
+Normalize_lung_count<- as.data.frame(vst_mat)
+
+Dectin_genes<-c("CLEC7A","IL1B","IL6","IL23A","IL10","CCL2","CXCL2","TNF","IL12A")
+
+```
+
+
+```{r}
+## Finetuning the data
+
+Normalize_lung_count<-rownames_to_column(Normalize_lung_count,var = "Gene_Symbol")
+
+Dectin_sig<- Normalize_lung_count %>% filter(Gene_Symbol %in% Dectin_genes)
+
+## Storing Dectin 1 dataset
+
+write_rds(Dectin_sig,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Dectin1_set.RDS")
+
+
+
+# Transpose and convert Dectin_sig long format
+expr_long <- Dectin_sig %>%
+  pivot_longer(-Gene_Symbol, names_to = "sample", values_to = "Expression")
+
+ 
+Metadata<- Metadata %>% rownames_to_column("sample")
+expr_long <- expr_long %>%
+  left_join(Metadata, by = "sample")  # assumes metadata has 'sample' and 'CAlevel'
+
+### Visualization
+
+ggplot(expr_long, aes(x = CAlevel, y = Expression, fill = CAlevel)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  #geom_jitter(width = 0.2, size = 0.8, alpha = 0.4) +
+  stat_compare_means(method = "wilcox.test", label = "p.format", size = 3) +
+  facet_wrap(~ Gene_Symbol, scales = "free_y", ncol = 4) +
+  scale_y_log10() +  # log-transform the y-axis
+  scale_fill_manual(values = c("Low" = "#00BFC4", "High" = "#F8766D")) +
+  theme_bw(base_size = 12) +
+  labs(title = "Gene Expression by Candida Group (Log Scale)",
+       x = "Candida Level", y = "Log(Expression)") +
+  theme(strip.text = element_text(face = "bold", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Dectin-1_signature_NSCLC_ORIEN.png", width = 8, height = 10)
+
+
+```
+
+```{r}
+## Buffa score and mitoscore comparison
+
+load("exploratory/Data/SCNweights.RData")
+
+Normalize_lung_count<- Normalize_lung_count %>% rownames_to_column("Gene.Symbol")
+
+replacements <- c(
+  "CLECL7A" = "CLEC7A",
+  "FAM65B" = "RIPOR2",
+  "VISTA" = "VSIR",
+  "ERO1L" = "ERO1B",
+  "C19orf59" = "MCEMP1",
+  "EMR3" = "ADGRE3",
+  "FAM26E" = "CALHM5",
+  "CD97" = "ADGRE5", 
+  "GPR124" = "ADGRA2",
+  "ELTD1" = "ADGRL4",
+  "C11orf82" = "DDIAS",
+  "KIAA1524" = "CIP2A",
+  "SGOL1"  = "SGO1",
+  "GSG2" = "ITGAE",
+  "KIAA1462" = "JCAD",
+  "WISP1" = "CCN4", 
+  "FAM64A" = "PIMREG",
+  "C16orf59" = "TEDC2",
+  "SGOL2" = "SGO2",
+  "MLF1IP" = "CENPU",
+  "KIAA0101" = "PCLAF",
+  "RARRES3" = "PLAAT4",
+  "TMEM56" = "TLCD4",
+  "LOC642852" = "LINC00205",
+  "LOC100507463" = "PSMB8",
+  "FAM92A1" = "FAM92A",
+  "C10orf2" = "TWNK",
+  "FAM134B" = "RETREG1",
+  "FAM26F" = "CALHM6",
+  "FYB" = "FYB1",
+  "AMICA1" = "JAML",
+  "GPR97" = "ADGRG3",
+  "EMR2" = "ADGRE2",
+  "IL8" = "CXCL8",
+  "CXCR7" = "ACKR3",
+  "PD-1" = "PDCD1",
+  "PDL-1" = "CD274",
+  "TIM-3" = "HAVCR2",
+  "OX40L" = "TNFSF4",
+  "HVEM" = "TNFRSF14",
+  "CD137L" = "TNFSF9"
+)
+
+# Assume your gene matrix is called `gene_matrix`
+# First column is "Gene.Symbol" and rest are sample count columns
+
+
+# `replacements` maps: desired_name = current_name
+# You want to replace current_name (values) with desired_name (names)
+
+# Invert the replacements: current_name => desired_name
+reverse_replacements <- setNames(names(replacements), replacements)
+
+# Assuming your gene expression matrix is `gene_matrix` and
+# first column is `gene` with gene symbols
+Normalize_lung_count$Gene.Symbol <- ifelse(
+  Normalize_lung_count$Gene.Symbol %in% names(reverse_replacements),
+  reverse_replacements[Normalize_lung_count$Gene.Symbol],
+  Normalize_lung_count$Gene.Symbol
+)
+
+
+calc_labelled_z <- function(sig) {
+  tmp <- calculateAvgZScore(Normalize_lung_count, geneEntries(sig))
+  colnames(tmp)[colnames(tmp) == "avg_z_score"] <- sig
+  return(as_tibble(tmp))
+}
+
+calculate_many_zscores <- function(){
+  avail.sigs <- c("IFNg_18", "WNT", "Angiogenesis", "Adenosine", "Auslander", "Chaurio",
+                  "Chemokine", "Cytotoxic", "Effector_T_Cell", "Glycolysis",
+                  "gMDSC", "Huang_NRS", "Hypoxia", "IFNg_6", "IFNg_Effector_T_Cells",
+                  "Ipi_neoadjuvant", "MHC_I", "MHC_II", "mMDSC", "MYC",
+                  "Ock_Immune_Sig_Score", "Pan", "Proliferation", "Ras",
+                  "Roh_Immune_Score", "Rooney_Immune_Cytolytic", "Stroma",
+                  "TIP_Hot", "TLS", "LKB1_loss"
+  )
+  
+  sigs.ls <- lapply(avail.sigs, calc_labelled_z)
+  sigs.df <- purrr::reduce(sigs.ls, left_join)
+}
+
+sigs_zscore <- calculate_many_zscores()
+
+colnames(Normalize_lung_count)[1]<- "gene"
+
+sigs_buffa <- calculateBuffa(Normalize_lung_count)
+sigs_mito <- calculateMitoscore(Normalize_lung_count)
+sigs_scn <- calculateSCN(Normalize_lung_count,"gene")
+
+all_scores <- sigs_zscore %>%
+  left_join(sigs_buffa) %>%
+  left_join(sigs_mito) %>%
+  left_join(sigs_scn)
+
+Metadata<- Metadata %>% rownames_to_column("sample")
+
+all_scores<- all_scores %>% left_join(Metadata,by="sample")
+
+write_csv(all_scores,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/tmesig_NSCLC.csv")
+
+```
+
+
+```{r}
+
+all_scores<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/tmesig_NSCLC.csv")
+# Convert to long format for plotting
+plot_df <- all_scores %>% select(sample,CAlevel,buffa.score) %>%
+  pivot_longer(cols = -c(sample, CAlevel), names_to = "Signature", values_to = "Score") %>%
+  mutate(CAlevel = factor(CAlevel,levels=c("Low","High")))
+
+## Making Violon plot
+
+ggplot(plot_df, aes(x = CAlevel, y = Score, fill = CAlevel)) +
+  geom_violin(trim = FALSE, scale = "width", width = 0.9, color = "grey30") +
+  geom_boxplot(width = 0.12, outlier.shape = NA, alpha = 0.6, color = "grey10") +
+  geom_jitter(width = 0.15, size = 0.8, alpha = 0.25) +
+  facet_wrap(~ Signature, scales = "free_y", ncol = 4) +
+  stat_compare_means(
+    method = "wilcox.test",
+    label = "p.format",
+    size = 3,
+    label.x.npc = 0.4,   # horizontal center (0 = left, 1 = right)
+    label.y.npc = 1   # vertical center   (0 = bottom, 1 = top)
+  ) +
+  scale_fill_manual(values = c(Low = "#00BFC4", High = "#F8766D")) +
+  theme_bw(base_size = 12) +
+  labs(title = "Signature Scores by Candida Level",
+       x = "Candida Level", y = "Signature Score") +
+  theme(strip.text = element_text(face = "bold", size = 10),
+        axis.text.x = element_text(angle = 45,face = "bold", hjust = 1),
+        axis.text.y = element_text(face = "bold"),
+        legend.position = "none")
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Hypoxia_buffa_NSCLC.svg", width = 8, height = 6)
+
+```
