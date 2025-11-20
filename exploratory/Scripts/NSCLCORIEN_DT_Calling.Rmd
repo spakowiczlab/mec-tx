@@ -1,0 +1,297 @@
+---
+title: "Clustering_DT_Calling_NSCLCORIEN"
+author: "Dipankor Dhrubo"
+date: "2025-10-21"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(umap)
+library(survival)
+library(survminer)
+library(factoextra)
+library(scales)
+library(patchwork)
+library(forcats)
+```
+
+
+```{r}
+
+## Creating the binary data for clustering
+
+##  Loading of data
+
+NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+
+timeline_long_norm<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Treatment_simplified_longformat_data.csv")
+
+
+# Step 1: Define the time bin
+treatment_matrix <- timeline_long_norm %>%
+  select(sample, TimeSinceTreatmentStart, treatment_group) %>%
+  mutate(
+    TimeBin = sprintf("Month_%03d", round(TimeSinceTreatmentStart * 12)),
+    treatment_group = as.character(treatment_group)
+  ) %>%
+  group_by(sample, TimeBin) %>%
+  summarise(
+    Treatment = paste(sort(unique(treatment_group)), collapse = "+"),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = TimeBin,
+    values_from = Treatment,
+    values_fill = NA
+  )
+
+
+# Get column names without SL_ID
+month_cols <- names(treatment_matrix)[names(treatment_matrix) != "sample"]
+
+# Extract just the numeric part from the month columns
+month_numbers <- as.numeric(stringr::str_extract(month_cols, "\\d+"))
+
+# Order column names based on numeric month values
+ordered_months <- month_cols[order(month_numbers)]
+
+# Reorder your matrix columns
+treatment_matrix_ordered <- treatment_matrix[, c("sample", ordered_months)]
+
+
+
+treatment_long <- treatment_matrix_ordered %>%
+  pivot_longer(cols = -sample, names_to = "Month", values_to = "Treatment") %>%
+  mutate(Treatment = replace_na(Treatment, "None"))
+
+# One-hot encode treatments
+treatment_encoded <- treatment_long %>%
+  mutate(Feature = paste(Month, Treatment, sep = "_"),
+         Value = 1) %>%
+  select(sample, Feature, Value) %>%
+  pivot_wider(names_from = Feature, values_from = Value, values_fill = list(Value = 0))
+
+write_csv(treatment_encoded,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Treatment_binary_data.csv")
+
+```
+
+
+```{r}
+
+## Clustering for 5 years timerline
+
+treatment_short <- treatment_matrix_ordered %>% select(1:62) %>%
+  pivot_longer(cols = -sample, names_to = "Month", values_to = "Treatment") %>%
+  mutate(Treatment = replace_na(Treatment, "None"))
+
+# One-hot encode treatments
+treatment_encoded_short <- treatment_short %>%
+  mutate(Feature = paste(Month, Treatment, sep = "_"),
+         Value = 1) %>%
+  select(sample, Feature, Value) %>%
+  pivot_wider(names_from = Feature, values_from = Value, values_fill = list(Value = 0))
+
+
+# Step 2: Separate SL_ID and treatment features
+sl_ids <- treatment_encoded_short$sample
+features <- treatment_encoded_short %>% select(-sample)
+
+# Step 3: PCA (reduce dimensionality before distance calculation)
+pca_result_short <- prcomp(features, scale. = TRUE)
+pca_data_short <- as.data.frame(pca_result_short$x[, 1:50])
+pca_matrix <- as.matrix(pca_data_short)# First 50 PCs
+rownames(pca_matrix) <- sl_ids
+
+
+# Step 4: Run UMAP
+set.seed(42)
+umap_result <- umap(pca_matrix, n_neighbors = 30, min_dist = 0.3, metric = "euclidean")
+umap_df <- as.data.frame(umap_result$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+
+### Clustering
+cluster_results <- data.frame(sample = rownames(umap_df))
+
+# Loop over different k values
+for (k in 3:20) {
+  set.seed(42)
+  km <- kmeans(umap_df, centers = k)
+  cluster_results[[paste0("Cluster_k", k)]] <- km$cluster
+}
+
+
+colnames(cluster_results)[1]<- "sample"
+
+
+## Adding survival data to clustering file 
+
+Surv_data<- NSCLC_metadata %>% filter(sample %in% cluster_results$sample) %>% select(sample, diagsurvtime,status,Candida,Normalize_Candida,CAlevel)
+
+Cluster_surv<- cluster_results %>% 
+  left_join(Surv_data,by="sample") %>% drop_na() %>% unique() 
+
+write_csv(Cluster_surv,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Cluster_survival_NSCLC.csv")
+
+```
+
+```{r}
+
+## MTsurv plotting for all the clusters
+
+cluster_cols <- grep("^Cluster_k", names(Cluster_surv), value = TRUE)
+
+plot_list <- list()
+
+for (cluster in cluster_cols) {
+  # Make sure it's a factor
+  Cluster_surv[[cluster]] <- as.factor(Cluster_surv[[cluster]])
+  
+  # Survival object
+  surv_obj <- Surv(time = Cluster_surv$diagsurvtime, event = Cluster_surv$status)
+  
+  # Fit model
+  fit <- survfit(surv_obj ~ Cluster_surv[[cluster]])
+  
+  # Create plot
+  plot <- ggsurvplot(
+    fit,
+    data = Cluster_surv,
+    pval = TRUE,
+    title = paste("Survival Plot for", cluster),
+    legend.title = "Cluster",
+    legend.labs = levels(Cluster_surv[[cluster]]),
+    palette = "Dark2"
+  )$plot
+  
+  plot_list[[length(plot_list) + 1]] <- plot
+}
+
+# Combine all plots using patchwork
+combined_plot <- wrap_plots(plotlist = plot_list, ncol = 5)
+
+# Display all plots
+combined_plot
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Cluster_Survival.png", plot = combined_plot, width = 30, height = 26, dpi = 300)
+```
+
+
+```{r}
+
+
+
+# Expect these columns in Cluster_normal_Surv:
+# sample, diagsurvtime, status (1=event, 0=censor), Total_count2, Cluster_k3...Cluster_k20
+
+df0 <- Cluster_surv %>%
+  transmute(
+    sample,
+    days        = as.numeric(diagsurvtime),
+    vitalstatus = as.integer(status),
+    Normalize_Candida,
+    across(starts_with("Cluster_k"), .names = "{.col}")
+  )
+
+stopifnot(all(c("sample","days","vitalstatus","Normalize_Candida") %in% names(df0)))
+
+# mt.surv input frames (global)
+surv_df  <- df0 %>% select(sample, vitalstatus, days)
+value_df <- df0 %>% select(sample, Normalize_Candida)
+
+# Output dir
+out_dir <- "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/mtsurv_scans_by_k"
+dir.create(out_dir, showWarnings = FALSE)
+
+# Collect all scans here
+mts_all_df <- tibble()
+
+# Loop over k columns and clusters
+k_cols <- grep("^Cluster_k\\d+$", names(df0), value = TRUE)
+
+for (k_col in k_cols) {
+  message("Scanning ", k_col)
+  
+  # add cluster label for this k
+  df_k <- df0 %>%
+    select(sample, Normalize_Candida, !!k_col) %>%
+    rename(cluster = !!k_col) %>%
+    filter(!is.na(cluster))
+  
+  for (cl in sort(unique(df_k$cluster))) {
+    ids <- df_k %>% filter(cluster == cl) %>% pull(sample)
+    
+    v_sub <- value_df %>% semi_join(tibble(sample = ids), by = "sample")
+    s_sub <- surv_df  %>% semi_join(tibble(sample = ids), by = "sample")
+    
+    # mtsurv scan (positional args)
+    mts <- mt.surv::survivalByQuantile("Normalize_Candida", v_sub, s_sub) %>%
+      mutate(
+        log10p   = -log10(pval),
+        k_col    = k_col,
+        cluster  = as.character(cl)
+      )
+    
+    # mark chosen percentile (max -log10p with HR>=1; fallback = min p)
+    best <- mts %>% filter(hazard.direction == ">=1", is.finite(log10p))
+    if (nrow(best) == 0) best <- mts %>% arrange(pval) %>% slice_head(n = 1)
+    chosen_pct <- best$percentile[1]
+    
+    mts <- mts %>% mutate(chosen = percentile == chosen_pct)
+    
+    mts_all_df <- bind_rows(mts_all_df, mts)
+  }
+}
+
+# Save raw scans (optional)
+readr::write_csv(mts_all_df, file.path(out_dir, "mtsurv_scans_all_clusters.csv"))
+
+
+plot_mtsurv_per_k <- function(mts_all_df, out_dir = "mtsurv_scans_by_k") {
+  mts_all_df %>%
+    split(.$k_col) %>%
+    purrr::iwalk(function(dk,k) {
+      
+      # pick the max -log10(p) **within the HR≥1 (green) curve** for each cluster
+      chosen_pts <- dk %>%
+        dplyr::filter(hazard.direction == ">=1", is.finite(log10p)) %>%
+        dplyr::group_by(cluster) %>%
+        dplyr::slice_max(order_by = log10p, n = 1, with_ties = FALSE) %>%
+        dplyr::ungroup()
+      
+      # fallback: if a cluster has no HR≥1 points, take the overall smallest p
+      missing_cl <- setdiff(unique(dk$cluster), unique(chosen_pts$cluster))
+      if (length(missing_cl)) {
+        dk_fallback <- dk %>%
+          dplyr::filter(cluster %in% missing_cl, is.finite(log10p)) %>%
+          dplyr::group_by(cluster) %>%
+          dplyr::slice_max(order_by = log10p, n = 1, with_ties = FALSE) %>%
+          dplyr::ungroup()
+        chosen_pts <- dplyr::bind_rows(chosen_pts, dk_fallback)
+      }
+      
+      # order facets numerically if cluster labels are numeric
+      dk <- dk %>% dplyr::mutate(cluster = factor(cluster, levels = sort(unique(as.numeric(cluster)))))
+      chosen_pts <- chosen_pts %>% dplyr::mutate(cluster = factor(cluster, levels = levels(dk$cluster)))
+      
+      p <- ggplot(dk, aes(percentile, log10p, color = hazard.direction, group = cluster)) +
+        geom_line(linewidth = 0.8) +
+        geom_point(data = chosen_pts, aes(percentile, log10p),
+                   size = 2.2, color = "black", inherit.aes = FALSE) +
+        geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+        facet_wrap(~ cluster, scales = "free_y") +
+        theme_bw() +
+        labs(title = paste("mtsurv scans —", k),
+             x = "Percentile", y = expression(-log[10](p)))
+      
+      ggsave(file.path(out_dir, paste0("mtsurv_scans_", k, ".png")),
+             p, width = 14, height = 8, dpi = 300)
+    })
+}
+plot_mtsurv_per_k(mts_all_df, out_dir = out_dir)
+
+
+```

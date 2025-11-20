@@ -55,6 +55,10 @@ Metadata<- Metadata %>% column_to_rownames("sample")
 
 all(colnames(lung_expression2) == rownames(Metadata))
 
+## Saving the Processed Expression file
+
+write_rds(lung_expression2, "/fs/ess/PAS1695/projects/exotho/data/Digital_Twins/NSCLC_processed_gene_expression.rds")
+
 ### Doing VST transformation to normalize the count data
 
 dds <- DESeqDataSetFromMatrix(countData = lung_expression2, colData = Metadata, design = ~ CAlevel)
@@ -234,28 +238,31 @@ plot_df <- all_scores %>% select(sample,CAlevel,buffa.score) %>%
 
 ## Making Violon plot
 
-ggplot(plot_df, aes(x = CAlevel, y = Score, fill = CAlevel)) +
+ggplot(plot_df, aes(x = CAlevel, y = Score, fill=CAlevel )) +
   geom_violin(trim = FALSE, scale = "width", width = 0.9, color = "grey30") +
   geom_boxplot(width = 0.12, outlier.shape = NA, alpha = 0.6, color = "grey10") +
-  geom_jitter(width = 0.15, size = 0.8, alpha = 0.25) +
+  geom_jitter(width = 0.04, size = 0.5, alpha = 0.25) +
   facet_wrap(~ Signature, scales = "free_y", ncol = 4) +
   stat_compare_means(
     method = "wilcox.test",
     label = "p.format",
-    size = 3,
+    size = 6,
     label.x.npc = 0.4,   # horizontal center (0 = left, 1 = right)
     label.y.npc = 1   # vertical center   (0 = bottom, 1 = top)
   ) +
-  scale_fill_manual(values = c(Low = "#00BFC4", High = "#F8766D")) +
+  scale_fill_manual(values =c("#E7B800", "#2E9FDF")) +
   theme_bw(base_size = 12) +
   labs(title = "Signature Scores by Candida Level",
        x = "Candida Level", y = "Signature Score") +
   theme(strip.text = element_text(face = "bold", size = 10),
-        axis.text.x = element_text(angle = 45,face = "bold", hjust = 1),
-        axis.text.y = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45,face = "bold", hjust = 1,size = 20),
+        axis.text.y = element_text(face = "bold",size = 14),
+        axis.title.x = element_text(face = "bold",size = 24),
+        axis.title.y = element_text(face = "bold",size = 24),
+        title = element_text(face = "bold",size = 24),
         legend.position = "none")
 
 
-ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Hypoxia_buffa_NSCLC.svg", width = 8, height = 6)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Hypoxia_signature_NSCLC.svg", width = 6, height = 6)
 
 ```

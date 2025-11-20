@@ -9,8 +9,9 @@ output: html_document
 library(tableone)
 library(knitr)
 library(tidyverse)
-install.packages("devtools")
-devtools::install_github("spakowiczlab/mt.surv")
+library(survminer)
+library(survival)
+library(mt.surv)
 
 ```
 
@@ -81,7 +82,7 @@ p<-ggsurvplot(fit,
               conf.int = TRUE,
               lwd=1.5,font.x = c(15, "bold"),
               font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
-              font.legend = c(15),  # Two different colors for CI (light purple and light blue)
+              font.legend = c(9),  # Two different colors for CI (light purple and light blue)
               conf.int.alpha = 0.3,
               legend.labs = c("Low Candida (n = 1142)","High Candida (n = 429 )"),
               ggtheme = theme_bw(),
@@ -91,7 +92,7 @@ p$plot +
   labs(title = "NSCLC ORIEN") + 
   theme(
     legend.text = element_text(size = 9, face = "bold"),
-    legend.title = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 9, face = "bold"),
     legend.position = c(0.72, .25),
   )
 
@@ -99,7 +100,9 @@ p$plot +
 ## for normal savings
 
 ggsave(filename = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/ORIEN_NSCLC_kmplot_5years.png",
-       width = 6, height = 4)
+       width = 3, height = 3)
+ggsave(filename = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/ORIEN_NSCLC_kmplot_5years.svg",
+       width = 3, height = 3)
 
 ```
 

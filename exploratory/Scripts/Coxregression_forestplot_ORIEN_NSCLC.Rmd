@@ -115,19 +115,20 @@ ggplot(clean, aes(x = estimate, y = clean.term, color = is_high)) +
   geom_point(size = 1.5) +
   geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
-  geom_text(aes(x = x_position, label = pval_label), hjust = -0.80, size = 5.5) +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -0.01, size = 2) +
   scale_color_manual(values = c(`TRUE` = "red", `FALSE` = "black")) +
   scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
-  labs(x = "Hazard Ratio (95% CI)", y = "Predictor",
-       title = "ORIEN Lung Cancer Patient Survival by Demographics") +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor") +
   theme_bw() +
-  theme(axis.text.x = element_text(face = "bold", size = 12),
-        axis.text.y = element_text(face = "bold", size = 12),
-        axis.title  = element_text(size = 14, face = "bold")) +
+  theme(
+        axis.text.x = element_text(face = "bold", size = 9),
+        axis.text.y = element_text(face = "bold", size = 9),
+        axis.title  = element_text(size = 9, face = "bold")) +
   guides(color = "none")   # hide
 
 
-ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Forestplot_ORIEN_NSCLC.png", height = 6, width = 10)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Forestplot_ORIEN_NSCLC.png", height = 2, width = 2)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Forestplot_ORIEN_NSCLC.svg", height = 2, width = 3)
 
 ```
 

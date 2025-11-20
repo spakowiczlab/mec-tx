@@ -24,38 +24,78 @@ library(stringr)
 ### Loading Radiation only patients dataset
 
 Radiation_data<- readRDS(file= "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") |>
-  filter(RadiationTherapyInd == "Yes")
+  filter(RadiationTherapyInd == "Yes") %>% unique()
+
+Radiation_patient_expression<- readRDS("/fs/ess/PAS1695/projects/exotho/data/Digital_Twins/NSCLC_processed_gene_expression.rds") %>% select(all_of(Radiation_data$sample))
+
+```
+```{r}
+Radiation_data_Candida <- Radiation_data %>% select(sample,CAlevel,diagsurvtime,status,Candida) %>% unique()
+
+Clinical <- Radiation_data_Candida %>%
+  select(sample, diagsurvtime, status) %>%
+  dplyr::rename(vitalstatus = status) %>% mutate(days = as.numeric(diagsurvtime)) %>%
+  select(-diagsurvtime,sample, days, vitalstatus)
+
+ # Make sure you look at the dataframe first to select the correct columns.
+
+Abundance_data<- Radiation_data_Candida %>% select(sample,Candida)
+
+survoutput <- mt.surv::survivalByQuantile("Candida", Abundance_data, Clinical)
+
+# Removing the NA value
+
+survoutput<- survoutput[complete.cases(survoutput),]
+
+# Creating the plot
+
+survoutput %>% 
+  ggplot(aes(x = percentile, y = -log10(pval), color = hazard.direction)) +
+  geom_line(lwd = 1) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") +
+  theme_bw()
 
 
+Radiation_data<- Radiation_data %>% mutate(CAlevel = ifelse(Candida < 1193, "Low","High")) %>%
+  mutate(CAlevel = factor(CAlevel, levels = c("Low", "High")))
 
 ```
 
-# KMplot CRC radiation patients
 
 
 ```{r}
 
+## Survival Analysis on Radiation treated patients 
+
 fit<- survfit(Surv(diagsurvtime, status)~CAlevel, data = Radiation_data)
 fit$strata
 
-ggsurvplot(fit,
-               # data = Radiation_surv_data,
-               pval=T,
-               pval.coord = c(0.155, 0.2),
-               risk.table=F,
-               xlab="Time (years)",palette =
-                 c("#E7B800", "#2E9FDF"),# custom color palettes
-               conf.int = TRUE,
-               lwd=1.5,font.x = c(15, "bold"),
-               font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
-               font.legend = c(15),  # Two different colors for CI (light purple and light blue)
-               conf.int.alpha = 0.3,
-               xlim=c(0, 10),
-               break.x.by= 1,
-               #legend.labs = c("Low Candida (n = 981)","High Candida (n = 341 )"),
-               ggtheme = theme_bw(),
-               legend.title = "Abundance   ")+
-   labs(title = "Normalize Count Kmplot")
+p<-ggsurvplot(fit,
+              data = Radiation_data,
+              pval=T,
+              pval.coord = c(0.155, 0.2),
+              risk.table=T,
+              xlim = c(0, 10),
+              break.x.by = 1,
+              xlab="Time (years)",palette = 
+                c("#E7B800", "#2E9FDF"),# custom color palettes
+              conf.int = TRUE,
+              lwd=1.5,font.x = c(15, "bold"),
+              font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
+              font.legend = c(15),  # Two different colors for CI (light purple and light blue)
+              conf.int.alpha = 0.3,
+              legend.labs = c("Low Candida (n = 646)","High Candida (n = 185 )"),
+              ggtheme = theme_bw(),
+              legend.title = "Abundance   ")
+
+p$plot + 
+  labs(title = "NSCLC ORIEN") + 
+  theme(
+    legend.text = element_text(size = 9, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.position = c(0.62, .85),
+  )
 
 ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/orien-nsclc_rad-only_ca.svg",
        height = 4, width = 6)

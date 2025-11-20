@@ -1,0 +1,755 @@
+---
+title: "NSCLC_Medication_Timeline"
+author: "Dipankor Dhrubo"
+date: "2025-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(umap)
+library(survival)
+library(survminer)
+library(factoextra)
+library(scales)
+library(patchwork)
+library(forcats)
+```
+
+```{r}
+# Loading the metadata
+
+NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+
+# A more fine tuning to make sure we are only using those samples that are directly coming from the lung tumor specimen
+
+Specimen<- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_ClinicalMolLinkage_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_ClinicalMolLinkage_V4.csv")) %>%
+  select(RNASeq,SpecimenSiteOfCollection) %>% filter(RNASeq %in% NSCLC_metadata$sample)
+
+lung_keywords <- c("lung", "Lung", "bronchus", "Bronchus", "trachea", "Trachea")
+
+# Keep rows where Specimen_site contains any of the lung-related keywords
+lung_sites <- Specimen %>%
+  filter(grepl(paste(lung_keywords, collapse = "|"), SpecimenSiteOfCollection, ignore.case = TRUE)) %>% pull(RNASeq)
+
+NSCLC_metadata <- NSCLC_metadata %>% filter(sample %in% lung_sites) %>% unique()
+
+
+```
+
+```{r}
+###### Reordering Treatment 
+
+
+#### Categorizing drugs
+
+Medication<- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Medications_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Medications_V4.csv")) %>%
+  select(AvatarKey,Medication,MedLineRegimen,AgeAtMedStart,AgeAtMedStop) %>% filter(AvatarKey %in% NSCLC_metadata$AvatarKey)
+
+Drug_annotation<- readxl::read_xlsx("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/ORIEN_Medication_List_v2_20240503.xlsx") %>%
+  select(-1)
+
+
+drug_map <- Drug_annotation %>%
+  mutate(treatment_group = case_when(
+    Immunotherapy == "yes" ~ "IO",
+    Chemotherapy == "yes" ~ "Chemo",
+    `Small Molecule` == "yes" ~ "Small_Molecule",
+    `Hormone Therapy` == "yes" ~ "Hormone",
+    Targeted == "yes" ~ "Targeted",
+    Ancillary == "yes" ~ "Ancillary",
+    `Radioactive Isotope` == "yes" ~ "Radio_Iso",
+    Oncologic == "yes" ~ "Onco_drug",
+    TRUE ~ "Other"
+  )) %>%
+  select(Medication, treatment_group) %>%
+  dplyr::rename(drug_name = Medication)
+
+colnames(drug_map)[1]<- "Medication"
+
+```
+
+
+```{r}
+
+### Incorporating Age at diagnosis
+
+Diagnosis <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Diagnosis_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv")) %>% 
+  filter(AvatarKey %in% NSCLC_metadata$AvatarKey) %>% select(AvatarKey,AgeAtDiagnosis) %>% 
+  filter(! AgeAtDiagnosis == "Unknown/Not Applicable") %>%
+  filter(! AgeAtDiagnosis == "Age Unknown/Not Recorded") %>%
+  mutate(AgeAtDiagnosis = ifelse(grepl("Age 90 or older", AgeAtDiagnosis), "90", AgeAtDiagnosis))
+
+### Taking the latest diagnostic time
+
+Diagnosis <- Diagnosis %>%
+  group_by(AvatarKey) %>%
+  arrange(AgeAtDiagnosis) %>%  # Ensure it's sorted by age
+  slice_max(order_by = AgeAtDiagnosis, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
+  ungroup()
+
+### Incorporating Radiation Start and end time 
+Radiation <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Radiation_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01//20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Radiation_V4.csv")) %>% 
+  filter(AvatarKey %in% NSCLC_metadata$AvatarKey) %>% select(AvatarKey, AgeAtRadiationStart,AgeAtRadiationStop) %>% mutate(AgeAtRadiationStart = as.numeric(AgeAtRadiationStart),
+       AgeAtRadiationStop = as.numeric(AgeAtRadiationStop)) %>%
+  group_by(AvatarKey) %>%
+  arrange(AgeAtRadiationStart) %>%  # Ensure it's sorted by age
+  slice_max(order_by = AgeAtRadiationStart, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
+  ungroup()
+
+
+Time_status<- NSCLC_metadata %>% left_join(Diagnosis, by="AvatarKey") %>%
+  left_join(Radiation, by="AvatarKey") %>%
+  select(sample, 
+         AvatarKey,
+         diagsurvtime,
+         status, 
+         AgeAtDiagnosis, 
+         RadiationTherapyInd,
+         AgeAtRadiationStart, 
+         AgeAtRadiationStop)
+
+
+###  Some joining of files to make proper medication file.
+
+med_annotated <- Medication %>%
+  left_join(drug_map, by = "Medication")
+
+med_annotated<- Time_status %>% left_join(med_annotated,by="AvatarKey")
+
+med_annotated<- med_annotated %>% select(sample, AvatarKey,AgeAtDiagnosis,
+                                         diagsurvtime,status, Medication,
+                                         treatment_group,AgeAtMedStart, 
+                                         AgeAtMedStop, RadiationTherapyInd,
+                                         AgeAtRadiationStart, 
+                                         AgeAtRadiationStop)
+
+med_annotated<- med_annotated %>% mutate(
+  AgeAtMedStart = as.numeric(AgeAtMedStart),
+  AgeAtMedStop = as.numeric(AgeAtMedStop)
+)
+
+
+### more fine tuning the meidcation file
+
+df <- med_annotated %>%
+  # Clean up: drop NA start dates and standardize
+  filter(!is.na(AgeAtMedStart), !is.na(AgeAtMedStop)) %>%
+  
+  # Apply truncation logic
+  mutate(AgeAtDiagnosis= as.numeric(AgeAtDiagnosis),
+    AgeAtTreatmentStart.mod = if_else(
+    AgeAtDiagnosis > AgeAtMedStart,
+    AgeAtDiagnosis,
+    AgeAtMedStart
+  )) %>%
+  
+  # Remove invalid treatments (where end is before start)
+  filter(AgeAtMedStop > AgeAtTreatmentStart.mod) %>%
+  select(-AgeAtRadiationStart,-AgeAtRadiationStop,-RadiationTherapyInd)
+
+
+# Step 1: Build radiation_df with only the valid radiation entries
+radiation_df <- Time_status %>%
+  filter(RadiationTherapyInd == "Yes") %>%
+  transmute(
+    sample = sample,
+    AvatarKey = AvatarKey,
+    AgeAtDiagnosis = as.numeric(AgeAtDiagnosis),
+    diagsurvtime = diagsurvtime,
+    status = status,
+    Medication = "Radiation",
+    treatment_group = "Radiation",
+    AgeAtMedStart = as.numeric(AgeAtRadiationStart),
+    AgeAtMedStop = as.numeric(AgeAtRadiationStop)
+  ) %>%
+  mutate(
+    AgeAtTreatmentStart.mod = if_else(AgeAtDiagnosis > AgeAtMedStart,
+                                      AgeAtDiagnosis,
+                                      AgeAtMedStart)
+  ) %>%
+  filter(AgeAtMedStop > AgeAtTreatmentStart.mod)
+
+## Combining the medication and radiation file
+
+df_combined <- bind_rows(df, radiation_df)
+
+
+write_rds(df_combined,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")
+
+```
+
+
+```{r}
+
+### Normalizing the medication file
+
+df_combined <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")
+
+# Define timeline bounds (can use min/max from dataset or per-patient)
+min_age <- floor(min(df_combined$AgeAtDiagnosis, na.rm = TRUE))
+max_age <- ceiling(max(df_combined$AgeAtMedStop, na.rm = TRUE))
+
+# Create 6-month intervals
+intervals <- seq(min_age, max_age, by = 0.5)
+
+# Get unique patient IDs
+timeline <- data.frame(SL_ID = unique(df_combined$sample))
+
+# Loop through 6-month bins and record treatments
+for (i in seq_along(intervals[-length(intervals)])) {
+  start_bin <- intervals[i]
+  end_bin <- intervals[i + 1]
+  bin_label <- paste0("Period_", i, "_Age_", start_bin, "_", end_bin)
+  
+  timeline[[bin_label]] <- sapply(timeline$SL_ID, function(pid) {
+    patient_rows <- df_combined %>% filter(sample == pid)
+    
+    overlap_rows <- patient_rows %>%
+      filter(AgeAtTreatmentStart.mod < end_bin & AgeAtMedStop >= start_bin)
+    
+    if (nrow(overlap_rows) == 0) return(NA)
+    
+    # Annotate as "Drug (Type)"
+    treatments <- paste0(overlap_rows$Medication, " (", overlap_rows$treatment_group, ")")
+    
+    return(paste(treatments, collapse = "; "))
+  })
+}
+
+colnames(timeline)[-1] <- gsub("^Period_\\d+_", "", colnames(timeline)[-1])
+
+timeline_long <- timeline %>%
+  pivot_longer(
+    cols = -SL_ID,
+    names_to = "TimeBin",
+    values_to = "Treatment"
+  ) %>%
+  filter(!is.na(Treatment))
+
+
+## Compiling the treatment group 
+
+timeline_long <- timeline_long %>%
+  mutate(TreatmentType = case_when(
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "IO") & str_detect(Treatment, "Radiation") & str_detect(Treatment, "Small_Molecule") ~ "Chemo + IO + Radiation + Small Molecule",
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "IO") & str_detect(Treatment, "Radiation") ~ "Chemo + IO + Radiation",
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "IO") & str_detect(Treatment, "Small_Molecule") ~ "Chemo + IO + Small Molecule",
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "Radiation") & str_detect(Treatment, "Small_Molecule") ~ "Chemo + Radiation + Small Molecule",
+    str_detect(Treatment, "IO") & str_detect(Treatment, "Radiation") & str_detect(Treatment, "Small_Molecule") ~ "IO + Radiation + Small Molecule",
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "Small_Molecule") ~ "Chemo + Small Molecule",
+    str_detect(Treatment, "IO") & str_detect(Treatment, "Small_Molecule") ~ "IO + Small Molecule",
+    str_detect(Treatment, "Radiation") & str_detect(Treatment, "Small_Molecule") ~ "Radiation + Small Molecule",
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "IO") ~ "Chemo + IO",
+    str_detect(Treatment, "Chemo") & str_detect(Treatment, "Radiation") ~ "Chemo + Radiation",
+    str_detect(Treatment, "IO") & str_detect(Treatment, "Radiation") ~ "IO + Radiation",
+    str_detect(Treatment, "Chemo") ~ "Chemo only",
+    str_detect(Treatment, "IO") ~ "IO only",
+    str_detect(Treatment, "Radiation") ~ "Radiation only",
+    str_detect(Treatment, "Small_Molecule") ~ "Small Molecule only",
+    TRUE ~ "Other/Ancillary"
+  ))
+
+
+
+# First, extract age from TimeBin (e.g., "Age_65_65.5" -> 65)
+timeline_long <- timeline_long %>%
+  mutate(AgeStart = as.numeric(str_extract(TimeBin, "(?<=Age_)\\d+\\.?\\d*")))
+
+# Sort patients by minimum treatment start age
+ordered_patients <- timeline_long %>%
+  group_by(SL_ID) %>%
+  summarise(MinAge = min(AgeStart, na.rm = TRUE)) %>%
+  arrange(MinAge) %>%
+  pull(SL_ID)
+
+# Relevel SL_ID for plotting
+timeline_long$SL_ID <- factor(timeline_long$SL_ID, levels = ordered_patients)
+
+
+```
+
+
+```{r}
+
+### Some miscellenious steps
+
+df_combined<- df_combined %>% mutate(age_at_death_progression = AgeAtDiagnosis + diagsurvtime)
+
+# Merge with timeline_long if needed
+timeline_long_2 <- timeline_long %>% 
+  left_join(df_combined %>% select(sample, status, age_at_death_progression), by = "sample") %>%
+  unique()
+
+
+# STEP 1: Clean original medication + radiation data
+df_clean <- df_combined %>%
+  filter(!is.na(AgeAtMedStart), !is.na(AgeAtMedStop)) %>%
+  mutate(AgeAtTreatmentStart.mod = if_else(
+    AgeAtDiagnosis > AgeAtMedStart,
+    AgeAtDiagnosis,
+    AgeAtMedStart
+  )) %>%
+  filter(AgeAtMedStop > AgeAtTreatmentStart.mod)
+
+# STEP 2: Create 1-month bins
+min_age <- floor(min(df_clean$AgeAtDiagnosis, na.rm = TRUE) * 12) / 12
+max_age <- ceiling(max(df_clean$AgeAtMedStop, na.rm = TRUE) * 12) / 12
+intervals <- seq(min_age, max_age, by = 1/12)
+
+
+expanded_timeline <- df_clean %>%
+  rowwise() %>%
+  mutate(
+    month_seq = list(seq(AgeAtTreatmentStart.mod, AgeAtMedStop, by = 1/12))
+  ) %>%
+  unnest(month_seq) %>%
+  mutate(month_seq = round(month_seq, 3)) %>%
+  distinct(sample, treatment_group, month_seq)
+
+# STEP 4: Create patient-month-treatment matrix
+timeline_long_monthly <- expanded_timeline %>%
+  dplyr::rename(AgeMonth = month_seq) %>%
+  select(sample, AgeMonth, treatment_group)
+
+# STEP 5: Normalize start time (set first treatment to time 0)
+start_age_per_patient <- timeline_long_monthly %>%
+  group_by(sample) %>%
+  summarise(start_age = min(AgeMonth, na.rm = TRUE))
+
+timeline_long_norm <- timeline_long_monthly %>%
+  left_join(start_age_per_patient, by = "sample") %>%
+  mutate(TimeSinceTreatmentStart = AgeMonth - start_age)
+
+timeline_long_norm <- timeline_long_norm %>%
+  mutate(TimeSinceTreatmentStart = round(TimeSinceTreatmentStart * 12) / 12)  # round to nearest month
+
+
+timeline_long_norm<- timeline_long_norm %>% left_join(NSCLC_metadata %>% 
+                                                        select(sample,Stage,status), by="sample")
+
+
+timeline_long_norm<- timeline_long_norm %>% left_join(timeline_long_2 %>% 
+                                                        select(sample, age_at_death_progression), by="sample") %>%
+  unique()
+
+
+timeline_long_norm$sample <- factor(timeline_long_norm$sample, levels = unique(timeline_long_norm$sample))
+
+
+
+ggplot(timeline_long_norm %>% 
+         filter(!Stage== "Unknown") %>% filter(!Stage== 0), aes(x = TimeSinceTreatmentStart, y = sample, fill = treatment_group)) +
+  geom_tile(height = 0.8) +
+  labs(x = "Time Since First Treatment (Years)", y = "Patient", fill = "Treatment Type") +
+  scale_x_continuous(breaks = seq(0, 15, by = 1)) +
+  theme_bw() +
+  facet_wrap(~Stage)+
+  theme(
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank()
+  )
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Timeline_stage_permonth.png", width = 18, height = 20)
+
+## Saving the file for future work
+
+write_csv(timeline_long_norm,
+          "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Treatment_simplified_longformat_data.csv")
+
+```
+
+```{r}
+## Radiation only timeline
+
+Radiation_patients<- timeline_long_norm %>% filter(treatment_group == "Radiation") %>% pull(sample)
+Radiation_patients_timeline<- timeline_long_norm %>% filter(sample %in% Radiation_patients)
+
+
+ggplot(Radiation_patients_timeline, aes(x = TimeSinceTreatmentStart, y = sample, fill = treatment_group)) +
+  geom_tile(height = 0.9) +
+  labs(x = "Time Since First Treatment (Years)", y = "Patient", fill = "Treatment Type") +
+  scale_x_continuous(breaks = seq(0, 15, by = 1)) +  # Change 15 to your max time
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5,vjust = .9, size = 20),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank()
+  )
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Radiation_patients_only_Timeline.png", width = 18, height = 20)
+
+```
+
+
+
+```{r}
+
+
+# Build contiguous month-level segments from a long treatment table
+# Expects columns:
+#   sample (id), TimeSinceTreatmentStart (years), treatment_group (string)
+# Returns:
+#   sample, type, block, m_start, m_end, start_year, end_year
+build_segs_from_long_months <- function(
+  df,
+  id_col   = "sample",
+  time_col = "TimeSinceTreatmentStart",
+  type_col = "treatment_group",
+  drop_types   = c("None", NA),
+  valid_types  = c("Radiation","Chemo","IO","Hormone","Targeted",
+                   "Small_Molecule","Ancillary","Other")
+){
+  stopifnot(all(c(id_col, time_col, type_col) %in% names(df)))
+
+  # 1) Basic clean + month index
+  dat <- df %>%
+    transmute(
+      sample = .data[[id_col]],
+      t_year = as.numeric(.data[[time_col]]),
+      type_raw = as.character(.data[[type_col]])
+    ) %>%
+    filter(!is.na(sample), !is.na(t_year), !is.na(type_raw)) %>%
+    filter(!(type_raw %in% drop_types)) %>%
+    # robust month index (handles 0.083333…)
+    mutate(m = floor(t_year * 12 + 1e-6))
+
+  if (!nrow(dat)) {
+    return(tibble(sample=character(), type=factor(), block=integer(),
+                  m_start=integer(), m_end=integer(),
+                  start_year=double(), end_year=double()))
+  }
+
+  # 2) Canonicalize treatment labels to your house style (light touch)
+  canon <- function(x){
+    x <- trimws(x)
+    x <- str_replace_all(x, " ", "_")
+    x <- str_replace_all(x, "-", "_")
+    # harmonize a few common variants
+    x <- case_when(
+      str_detect(x, regex("radiation|rt|xrt|imrt|sbrt|radiother", TRUE)) ~ "Radiation",
+      str_detect(x, regex("\\bio\\b|immuno|pembro|nivol|atezo|ipi|pd[- ]?1|pd[- ]?l1|ctla", TRUE)) ~ "IO",
+      str_detect(x, regex("chemo|chemotherapy|platin|taxel|5fu|gemcitabine|doxo", TRUE)) ~ "Chemo",
+      str_detect(x, regex("target|tki|inhibitor|egfr|alk|braf|mek|parp|her2|trast", TRUE)) ~ "Targeted",
+      str_detect(x, regex("hormone|endocrine|androgen|estrogen|tamox|abiraterone|enzalu|aromatase|letro|anastro|fulves", TRUE)) ~ "Hormone",
+      str_detect(x, regex("small[ _-]?molecule|onco.?drug|oncodrug", TRUE)) ~ "Small_Molecule",
+      TRUE ~ x
+    )
+    x
+  }
+
+  dat <- dat %>% mutate(type = canon(type_raw))
+
+  # 3) Collapse per (sample, month) to a SINGLE label.
+  #    If multiple types present in that month, create a combo like "Chemo+Radiation".
+  month_label <- dat %>%
+    group_by(sample, m) %>%
+    summarise(
+      # restrict to known/allowed labels; unknowns -> "Other"
+      types = {
+        lab <- unique(type)
+        lab[!lab %in% valid_types] <- "Other"
+        # order by your preferred display order, then collapse with '+'
+        lab <- factor(lab, levels = valid_types)
+        paste(sort(as.character(lab)), collapse = "+")
+      },
+      .groups = "drop"
+    ) %>%
+    mutate(types = if_else(types == "", "Other", types))
+
+  # 4) Build contiguous runs (same label, consecutive months)
+  segs <- month_label %>%
+    arrange(sample, m) %>%
+    group_by(sample) %>%
+    mutate(
+      new_block = (m != lag(m, default = first(m)) + 1L) |
+                  (types != lag(types, default = first(types))),
+      block = cumsum(replace_na(new_block, TRUE))
+    ) %>%
+    group_by(sample, block, types) %>%
+    summarise(
+      m_start = min(m),
+      m_end   = max(m) + 1L,            # end is exclusive
+      .groups = "drop_last"
+    ) %>%
+    ungroup() %>%
+    mutate(
+      start_year = m_start / 12,
+      end_year   = m_end   / 12,
+      type       = fct_inorder(types)
+    ) %>%
+    select(sample, type, block, m_start, m_end, start_year, end_year) %>%
+    arrange(sample, block)
+
+  segs
+}
+
+
+segs <- build_segs_from_long_months(timeline_long_norm,
+                                    id_col   = "sample",
+                                    time_col = "TimeSinceTreatmentStart",
+                                    type_col = "treatment_group")
+
+head(segs)
+
+
+```
+
+
+```{r}
+
+## Ordering treatment timeline and plotting the figures
+
+# ---- canonical colors (subset will be used automatically) ----
+tx_cols <- c(
+  Radiation      = "#8B6BB7",
+  Chemo          = "#F28E2B",
+  IO             = "#59A14F",
+  Hormone        = "#E15759",
+  Targeted       = "#4E79A7",
+  Small_Molecule = "#76B7B2",
+  Ancillary      = "#E1BE6A",  # mustard
+  Other          = "#7E6148",  # brown
+  None           = "#C0C0C0"   # neutral light gray
+)
+
+# ---- map raw labels -> canonical types and clip to horizon ----
+prep_segs <- function(segs, horizon_years = 5, catch_all = "Other") {
+  segs %>%
+    mutate(type_raw = as.character(type)) %>%
+    mutate(
+      type = case_when(
+        str_detect(type_raw, regex("radiation|\\brt\\b|xrt|imrt|sbrt|radiother", TRUE)) ~ "Radiation",
+        str_detect(type_raw, regex("\\bio\\b|immuno|pembro|nivol|atezo|ipi|pd-1|pd-l1|ctla", TRUE)) ~ "IO",
+        str_detect(type_raw, regex("chemo|chemotherapy|platin|taxel|5fu|gemcitabine|doxo", TRUE)) ~ "Chemo",
+        str_detect(type_raw, regex("hormone|endocrine|androgen|estrogen|tamox|abiraterone|enzalu|aromatase|letro|anastro|fulves", TRUE)) ~ "Hormone",
+        str_detect(type_raw, regex("target|tki|inhibitor|egfr|alk|braf|mek|parp|her2|trast", TRUE)) ~ "Targeted",
+        str_detect(type_raw, regex("small[ _-]?molecule|onco.?drug|oncodrug", TRUE)) ~ "Small_Molecule",
+        str_detect(type_raw, regex("ancillary|support|palliat", TRUE)) ~ "Ancillary",
+        TRUE ~ catch_all
+      ),
+      t0 = pmax(0, pmin(start_year, horizon_years)),
+      t1 = pmax(0, pmin(end_year,   horizon_years))
+    ) %>%
+    filter(!is.na(sample), t1 > t0)
+}
+
+# ---- compute row order for ALL patients ----
+dominant_order <- function(segs_clip, treatment_order) {
+  per_type <- segs_clip %>%
+    group_by(sample, type) %>%
+    summarise(dur = sum(t1 - t0), .groups = "drop")
+  
+  totals <- per_type %>%
+    group_by(sample) %>%
+    summarise(total = sum(dur), .groups = "drop")
+  
+  # dominant type + share
+  dom <- per_type %>%
+    group_by(sample) %>%
+    slice_max(dur, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    left_join(totals, by = "sample") %>%
+    transmute(sample,
+              dom_type  = type,
+              dom_share = if_else(total > 0, dur / total, 0))
+  
+  # earliest start for dominant type
+  earliest_dom <- segs_clip %>%
+    group_by(sample, type) %>%
+    summarise(earliest = min(t0), .groups = "drop") %>%
+    inner_join(dom, by = c("sample", "type" = "dom_type"))
+  
+  dom %>%
+    left_join(earliest_dom %>% select(sample, earliest), by = "sample") %>%
+    mutate(
+      dom_type = fct_relevel(factor(dom_type), treatment_order),
+      ord1 = as.integer(dom_type),
+      ord2 = -dom_share,
+      ord3 = earliest
+    ) %>%
+    arrange(ord1, ord2, ord3) %>%
+    transmute(
+      sample,
+      sample_factor = factor(sample, levels = rev(sample)),  # top row = first
+      dom_type = fct_drop(dom_type),
+      dom_share,
+      earliest
+    )
+}
+
+# ---- PLOT: all patients, no clustering ----
+plot_all_timeline <- function(
+    segs,
+    horizon_years = 5,
+    treatment_order = c("Radiation","Chemo","IO","Hormone",
+                        "Targeted","Small_Molecule","Ancillary","Other","None"),
+    catch_all = "Other",
+    line_width = 0.9,
+    # --- NEW styling knobs ---
+    base_size = 16,
+    title_size = 22,
+    axis_title_size = 14,
+    axis_text_size = 12,
+    legend_title_size = 14,
+    legend_text_size = 12,
+    bold = TRUE
+) {
+  segs_clip <- prep_segs(segs, horizon_years = horizon_years, catch_all = catch_all)
+  
+  # only keep types that exist
+  present_types   <- sort(unique(segs_clip$type))
+  treatment_order <- intersect(treatment_order, present_types)
+  
+  # compute ordering
+  ord <- dominant_order(segs_clip, treatment_order)
+  
+  plot_df <- segs_clip %>%
+    dplyr::inner_join(ord %>% dplyr::select(sample, sample_factor), by = "sample") %>%
+    dplyr::mutate(type = factor(type, levels = treatment_order))
+  
+  pal <- tx_cols[treatment_order]
+  
+  ggplot(plot_df) +
+    geom_segment(
+      aes(x = t0, xend = t1, y = sample_factor, yend = sample_factor, colour = type),
+      linewidth = line_width, lineend = "butt"
+    ) +
+    scale_color_manual(values = pal, breaks = treatment_order, limits = treatment_order,
+                       drop = FALSE, name = "Treatment Type") +
+    scale_x_continuous(limits = c(0, horizon_years), breaks = 0:horizon_years,
+                       expand = expansion(mult = c(0.01, 0.01))) +
+    labs(title = "Treatment Timeline — Ordered by types",
+         x = "Time Since First Treatment (years)", y = "Patient") +
+    theme_bw(base_size = base_size) +
+    theme(
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor   = element_blank(),
+      legend.position    = "right",
+      axis.text.y        = element_blank(),
+      axis.ticks.y       = element_blank(),
+      # ---- NEW bold + sizes ----
+      text          = element_text(face = if (bold) "bold" else "plain"),
+      plot.title    = element_text(size = title_size, face = if (bold) "bold" else "plain", hjust = 0.5),
+      axis.title    = element_text(size = axis_title_size, face = if (bold) "bold" else "plain"),
+      axis.text     = element_text(size = axis_text_size, face = if (bold) "bold" else "plain"),
+      legend.title  = element_text(size = legend_title_size, face = if (bold) "bold" else "plain"),
+      legend.text   = element_text(size = legend_text_size,  face = if (bold) "bold" else "plain")
+    )
+}
+
+
+p <- plot_all_timeline(segs, horizon_years = 10)
+print(p)
+
+# If you prefer a different grouping (e.g., Chemo first):
+p2 <- plot_all_timeline(
+  segs3, horizon_years = 10,
+  treatment_order = c("Chemo","IO","Radiation","Hormone","Targeted","Small_Molecule","Ancillary","Other","None")
+)
+p2
+
+
+p <- plot_all_timeline(segs3, horizon_years = 10,
+                       base_size = 16, title_size = 16,
+                       axis_title_size = 14, axis_text_size = 12,
+                       legend_title_size = 14, legend_text_size = 12,
+                       bold = TRUE)
+print(p)
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Ordered_NSCLC_treatment_timeline.png", p, width = 12, height = 10)
+
+```
+
+```{r}
+
+
+df_combined<- readRDS("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")
+###### Drug proportion in the dataset
+
+
+plot_med_mix_clear <- function(df,
+                               group_col = "treatment_group",
+                               drug_col  = "Medication",
+                               top_n     = 8,       # keep top N per group
+                               min_prop  = 0.03,    # and anything ≥ 3%
+                               wrap      = 16,      # wrap label width
+                               base_size = 20) {
+  
+  stopifnot(all(c(group_col, drug_col) %in% names(df)))
+  
+  mix <- df %>%
+    filter(!is.na(.data[[group_col]]), !is.na(.data[[drug_col]])) %>%
+    transmute(
+      grp  = .data[[group_col]],
+      drug = str_squish(as.character(.data[[drug_col]]))
+    ) %>%
+    count(grp, drug, name = "n") %>%
+    group_by(grp) %>%
+    mutate(prop = n / sum(n)) %>%
+    arrange(grp, desc(prop), .by_group = TRUE) %>%
+    mutate(keep = row_number() <= top_n | prop >= min_prop,
+           drug2 = if_else(keep, drug, "Other")) %>%
+    group_by(grp, drug2) %>%                      # collapse long tail into “Other”
+    summarise(n = sum(n), prop = sum(prop), .groups = "drop") %>%
+    group_by(grp) %>%
+    arrange(desc(prop), .by_group = TRUE) %>%
+    mutate(
+      pct   = percent(prop, accuracy = 1),
+      label = if_else(drug2 == "Other" | prop >= min_prop,
+                      paste0(str_wrap(drug2, width = wrap), "\n", pct),
+                      "")
+    ) %>%
+    ungroup() %>%
+    mutate(drug2 = fct_reorder(drug2, prop, .desc = TRUE))
+  
+  # a pleasant, long palette (recycled as needed)
+  cols <- c(
+    "#1b9e77","#d95f02","#7570b3","#e7298a","#66a61e","#e6ab02","#a6761d","#666666",
+    "#8da0cb","#fc8d62","#66c2a5","#e78ac3","#a6d854","#ffd92f","#e5c494","#b3b3b3"
+  )
+  cols <- rep(cols, length.out = nlevels(mix$drug2))
+  names(cols) <- levels(mix$drug2)
+  
+  ggplot(mix, aes(x = grp, y = prop, fill = drug2)) +
+    geom_col(width = 0.96, colour = "white", linewidth = 0.2) +
+    geom_text(
+      data = subset(mix, label != ""),
+      aes(label = label),
+      position = position_stack(vjust = 0.5),
+      size = 4.1, lineheight = 0.9, colour = "black"
+    ) +
+    scale_fill_manual(values = cols, name = "Medication (top & ≥ threshold)") +
+    scale_y_continuous(labels = percent_format(accuracy = 1)) +
+    labs(
+      title = "Medication mix by treatment group",
+      x = NULL,
+      y = "Share of exposures (within group)"
+    ) +
+    theme_bw(base_size = base_size) +
+    theme(
+      panel.grid.major.x = element_blank(),
+      legend.position = "right",
+      legend.key.height = unit(0.35, "cm"),
+      legend.key.width  = unit(0.6,  "cm"),
+      axis.text.x = element_text(face = "bold")
+    )
+}
+
+# usage:
+ p <- plot_med_mix_clear(df_combined, top_n = 8, min_prop = 0.03)
+ p
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/med_mix_clear.svg", p, width = 25, height = 20)
+
+```
+
+
+
