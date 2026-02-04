@@ -786,7 +786,7 @@ Demo <- tx_focus_dt(
   Cluster_surv_2, Refined_timeline,
   kc = "Cluster_k8", cl = 8,
   focus_types  = c("Chemo"),
-  n_twins      = 50,
+  n_twins      = 90,
   min_share_tx = 0.33,
   start_filter = "all" , #"all", "single_only", "combo_only"
   enforce_sequence = T,
@@ -798,7 +798,7 @@ ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adeno
 
 Demo <- tx_focus_dt(
   Cluster_surv_2_squa, Refined_timeline_squa,
-  kc = "Cluster_k6", cl = 2,
+  kc = "Cluster_k10", cl = 3,
   focus_types  = c("Chemo"),
   n_twins      = 40,
   min_share_tx = 0.33,
