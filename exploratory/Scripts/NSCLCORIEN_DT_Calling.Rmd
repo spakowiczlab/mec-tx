@@ -14,6 +14,7 @@ library(survival)
 library(survminer)
 library(factoextra)
 library(scales)
+library(proxy)
 library(patchwork)
 library(forcats)
 ```
@@ -30,7 +31,50 @@ NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/explor
 timeline_long_norm<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Treatment_simplified_longformat_data.csv")
 
 
-# Step 1: Define the time bin
+
+### Step 1: Merge metadata onto timeline
+
+full_df <- timeline_long_norm %>%
+  left_join(
+    NSCLC_metadata %>%
+      select(sample, Normalize_Candida, diagsurvtime, Sex, BMI, SmokingStatus),
+    by = "sample"
+  )
+
+### Step 2: Define Candida High vs Low (with the existing filtered data) 
+mtsurv_lung<- mt.surv::survivalByQuantile(
+  "Normalize_Candida",
+  full_df %>% select(sample, Normalize_Candida) %>% unique(),
+  full_df %>% select(sample, status, diagsurvtime) %>% unique() %>%
+    rename(vitalstatus = status, days = diagsurvtime)
+)
+
+mtsurv_lung$log10p<- -log10(mtsurv_lung$pval)
+
+
+ggplot(mtsurv_lung, aes(x = percentile, y = -log10(pval), color = hazard.direction)) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray30") +
+  #facet_wrap(~ Cancer, scales = "free_y") +
+  theme_bw() +
+  labs(
+    title = "Candida_count",
+    x = "Percentile",
+    y = expression(-log[10](p))
+  ) +
+  theme(strip.text = element_text(size = 11),
+        axis.text = element_text(size = 9),
+        legend.position = "bottom")
+
+## Decided to cut at 80%
+
+cut <- quantile(NSCLC_metadata$Normalize_Candida, 0.80)
+
+full_df<- full_df %>%
+  mutate(CAlevel = ifelse(Normalize_Candida >= cut, "High", "Low"))
+
+
+### Step 3: Define the time bin
 treatment_matrix <- timeline_long_norm %>%
   select(sample, TimeSinceTreatmentStart, treatment_group) %>%
   mutate(
@@ -61,29 +105,11 @@ ordered_months <- month_cols[order(month_numbers)]
 # Reorder your matrix columns
 treatment_matrix_ordered <- treatment_matrix[, c("sample", ordered_months)]
 
+## Step 4 
 
+## Limit Treatment to 5 years
 
-treatment_long <- treatment_matrix_ordered %>%
-  pivot_longer(cols = -sample, names_to = "Month", values_to = "Treatment") %>%
-  mutate(Treatment = replace_na(Treatment, "None"))
-
-# One-hot encode treatments
-treatment_encoded <- treatment_long %>%
-  mutate(Feature = paste(Month, Treatment, sep = "_"),
-         Value = 1) %>%
-  select(sample, Feature, Value) %>%
-  pivot_wider(names_from = Feature, values_from = Value, values_fill = list(Value = 0))
-
-write_csv(treatment_encoded,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Treatment_binary_data.csv")
-
-```
-
-
-```{r}
-
-## Clustering for 5 years timerline
-
-treatment_short <- treatment_matrix_ordered %>% select(1:62) %>%
+treatment_short <- treatment_matrix_ordered %>% select(1:65) %>%
   pivot_longer(cols = -sample, names_to = "Month", values_to = "Treatment") %>%
   mutate(Treatment = replace_na(Treatment, "None"))
 
@@ -94,132 +120,102 @@ treatment_encoded_short <- treatment_short %>%
   select(sample, Feature, Value) %>%
   pivot_wider(names_from = Feature, values_from = Value, values_fill = list(Value = 0))
 
+## Removing columns with "None": will make things easy for clustering
+none_cols <- grep("_None$", names(treatment_encoded_short), value = TRUE)
+treat_for_cluster <- treatment_encoded_short %>% select(-all_of(none_cols))
 
-# Step 2: Separate SL_ID and treatment features
-sl_ids <- treatment_encoded_short$sample
-features <- treatment_encoded_short %>% select(-sample)
+write_csv(treat_for_cluster,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_5yearsTreatment_binary_data.csv")
 
-# Step 3: PCA (reduce dimensionality before distance calculation)
-pca_result_short <- prcomp(features, scale. = TRUE)
-pca_data_short <- as.data.frame(pca_result_short$x[, 1:50])
-pca_matrix <- as.matrix(pca_data_short)# First 50 PCs
+
+# matrix for k-means
+X <- treat_for_cluster %>%
+  tibble::column_to_rownames("sample") %>%
+  as.matrix()
+
+
+```
+
+
+```{r}
+
+## Step 5: Clustering
+
+sl_ids <- rownames(X)
+
+pca_result <- prcomp(X, scale. = TRUE)
+pca_matrix <- pca_result$x[, 1:50, drop = FALSE]   # take 50 PCs or fewer if needed
 rownames(pca_matrix) <- sl_ids
 
-
-# Step 4: Run UMAP
 set.seed(42)
-umap_result <- umap(pca_matrix, n_neighbors = 30, min_dist = 0.3, metric = "euclidean")
+umap_result <- umap(pca_matrix, n_neighbors = 30, min_dist = 0.3)
+
 umap_df <- as.data.frame(umap_result$layout)
 colnames(umap_df) <- c("UMAP1", "UMAP2")
+umap_df$sample <- sl_ids
 
+cluster_results <- data.frame(sample = sl_ids)
 
-### Clustering
-cluster_results <- data.frame(sample = rownames(umap_df))
-
-# Loop over different k values
 for (k in 3:20) {
   set.seed(42)
-  km <- kmeans(umap_df, centers = k)
+  km <- kmeans(umap_df[, c("UMAP1", "UMAP2")],
+               centers = k,
+               nstart = 50)
   cluster_results[[paste0("Cluster_k", k)]] <- km$cluster
 }
 
+Surv_data <- NSCLC_metadata %>%
+  filter(sample %in% cluster_results$sample) %>%
+  select(sample, diagsurvtime, status, Normalize_Candida, CAlevel)
 
-colnames(cluster_results)[1]<- "sample"
-
-
-## Adding survival data to clustering file 
-
-Surv_data<- NSCLC_metadata %>% filter(sample %in% cluster_results$sample) %>% select(sample, diagsurvtime,status,Candida,Normalize_Candida,CAlevel)
-
-Cluster_surv<- cluster_results %>% 
-  left_join(Surv_data,by="sample") %>% drop_na() %>% unique() 
+Cluster_surv <- cluster_results %>%
+  left_join(Surv_data, by = "sample") %>%
+  drop_na() %>%
+  distinct()
 
 write_csv(Cluster_surv,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Cluster_survival_NSCLC.csv")
 
 ```
 
 ```{r}
-
-## MTsurv plotting for all the clusters
-
-cluster_cols <- grep("^Cluster_k", names(Cluster_surv), value = TRUE)
-
-plot_list <- list()
-
-for (cluster in cluster_cols) {
-  # Make sure it's a factor
-  Cluster_surv[[cluster]] <- as.factor(Cluster_surv[[cluster]])
-  
-  # Survival object
-  surv_obj <- Surv(time = Cluster_surv$diagsurvtime, event = Cluster_surv$status)
-  
-  # Fit model
-  fit <- survfit(surv_obj ~ Cluster_surv[[cluster]])
-  
-  # Create plot
-  plot <- ggsurvplot(
-    fit,
-    data = Cluster_surv,
-    pval = TRUE,
-    title = paste("Survival Plot for", cluster),
-    legend.title = "Cluster",
-    legend.labs = levels(Cluster_surv[[cluster]]),
-    palette = "Dark2"
-  )$plot
-  
-  plot_list[[length(plot_list) + 1]] <- plot
-}
-
-# Combine all plots using patchwork
-combined_plot <- wrap_plots(plotlist = plot_list, ncol = 5)
-
-# Display all plots
-combined_plot
-
-ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Cluster_Survival.png", plot = combined_plot, width = 30, height = 26, dpi = 300)
-```
+## DT engine production
 
 
-```{r}
-
-
-
-# Expect these columns in Cluster_normal_Surv:
-# sample, diagsurvtime, status (1=event, 0=censor), Total_count2, Cluster_k3...Cluster_k20
+# Expect these columns in Cluster_surv:
+# sample, diagsurvtime, status, Normalize_Candida, Cluster_k3...Cluster_k20
 
 df0 <- Cluster_surv %>%
   transmute(
     sample,
     days        = as.numeric(diagsurvtime),
-    vitalstatus = as.integer(status),
+    vitalstatus = as.integer(status),          # 1 = event, 0 = censored
     Normalize_Candida,
     across(starts_with("Cluster_k"), .names = "{.col}")
   )
 
 stopifnot(all(c("sample","days","vitalstatus","Normalize_Candida") %in% names(df0)))
 
-# mt.surv input frames (global)
+# mt.surv input frames
 surv_df  <- df0 %>% select(sample, vitalstatus, days)
 value_df <- df0 %>% select(sample, Normalize_Candida)
 
-# Output dir
 out_dir <- "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/mtsurv_scans_by_k"
 dir.create(out_dir, showWarnings = FALSE)
 
-# Collect all scans here
 mts_all_df <- tibble()
 
-# Loop over k columns and clusters
 k_cols <- grep("^Cluster_k\\d+$", names(df0), value = TRUE)
 
 for (k_col in k_cols) {
   message("Scanning ", k_col)
   
-  # add cluster label for this k
   df_k <- df0 %>%
     select(sample, Normalize_Candida, !!k_col) %>%
     rename(cluster = !!k_col) %>%
     filter(!is.na(cluster))
+  
+  # (optional) you could drop tiny clusters here if you want:
+  # keep_ids <- df_k %>% count(cluster) %>% filter(n >= 20) %>% pull(cluster)
+  # df_k <- df_k %>% filter(cluster %in% keep_ids)
   
   for (cl in sort(unique(df_k$cluster))) {
     ids <- df_k %>% filter(cluster == cl) %>% pull(sample)
@@ -227,7 +223,7 @@ for (k_col in k_cols) {
     v_sub <- value_df %>% semi_join(tibble(sample = ids), by = "sample")
     s_sub <- surv_df  %>% semi_join(tibble(sample = ids), by = "sample")
     
-    # mtsurv scan (positional args)
+    # mt.surv scan on normalized Candida
     mts <- mt.surv::survivalByQuantile("Normalize_Candida", v_sub, s_sub) %>%
       mutate(
         log10p   = -log10(pval),
@@ -235,7 +231,7 @@ for (k_col in k_cols) {
         cluster  = as.character(cl)
       )
     
-    # mark chosen percentile (max -log10p with HR>=1; fallback = min p)
+    # choose percentile: max -log10p on HR>=1 (green); fallback = min p
     best <- mts %>% filter(hazard.direction == ">=1", is.finite(log10p))
     if (nrow(best) == 0) best <- mts %>% arrange(pval) %>% slice_head(n = 1)
     chosen_pct <- best$percentile[1]
@@ -246,23 +242,22 @@ for (k_col in k_cols) {
   }
 }
 
-# Save raw scans (optional)
-readr::write_csv(mts_all_df, file.path(out_dir, "mtsurv_scans_all_clusters.csv"))
+# Save all scans (optional but useful)
+write_csv(mts_all_df, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/mtsurv_scans_all_clusters.csv")
 
-
-plot_mtsurv_per_k <- function(mts_all_df, out_dir = "mtsurv_scans_by_k") {
+plot_mtsurv_per_k <- function(mts_all_df, out_dir) {
   mts_all_df %>%
     split(.$k_col) %>%
-    purrr::iwalk(function(dk,k) {
+    purrr::iwalk(function(dk, k) {
       
-      # pick the max -log10(p) **within the HR≥1 (green) curve** for each cluster
+      # Best point (max -log10p with HR>=1) per cluster
       chosen_pts <- dk %>%
         dplyr::filter(hazard.direction == ">=1", is.finite(log10p)) %>%
         dplyr::group_by(cluster) %>%
         dplyr::slice_max(order_by = log10p, n = 1, with_ties = FALSE) %>%
         dplyr::ungroup()
       
-      # fallback: if a cluster has no HR≥1 points, take the overall smallest p
+      # Fallback if a cluster has no HR>=1 point
       missing_cl <- setdiff(unique(dk$cluster), unique(chosen_pts$cluster))
       if (length(missing_cl)) {
         dk_fallback <- dk %>%
@@ -273,7 +268,7 @@ plot_mtsurv_per_k <- function(mts_all_df, out_dir = "mtsurv_scans_by_k") {
         chosen_pts <- dplyr::bind_rows(chosen_pts, dk_fallback)
       }
       
-      # order facets numerically if cluster labels are numeric
+      # order facets numerically
       dk <- dk %>% dplyr::mutate(cluster = factor(cluster, levels = sort(unique(as.numeric(cluster)))))
       chosen_pts <- chosen_pts %>% dplyr::mutate(cluster = factor(cluster, levels = levels(dk$cluster)))
       
@@ -291,7 +286,1239 @@ plot_mtsurv_per_k <- function(mts_all_df, out_dir = "mtsurv_scans_by_k") {
              p, width = 14, height = 8, dpi = 300)
     })
 }
+
 plot_mtsurv_per_k(mts_all_df, out_dir = out_dir)
 
 
+```
+
+
+```{r}
+#### Area under the curve
+
+# ---- AUC-style significance area from mtsurv scans ----
+# needs mts_all_df with columns: k_col, cluster, percentile, pval, hazard.direction
+
+out_dir<- "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures"
+sig_area <- function(mts_all_df, alpha = 0.05, method = c("sum","trap")) {
+  method <- match.arg(method)
+  
+  df <- mts_all_df %>%
+    mutate(
+      direction = case_when(
+        hazard.direction == "<1"  ~ "positive",   # High Candida better
+        hazard.direction == ">=1" ~ "negative",   # High Candida worse (the one PI cares about)
+        TRUE ~ NA_character_
+      ),
+      above = pmax(0, log(alpha) - log(pval))      # natural log, like your original
+    ) %>% filter(!is.na(direction), is.finite(above))
+  
+  if (method == "sum") {
+    out <- df %>%
+      filter(pval < alpha) %>%
+      group_by(k_col, cluster, direction) %>%
+      summarise(sig.area = sum(above), .groups = "drop")
+  } else {
+    # trapezoid across percentile (proper area)
+    out <- df %>%
+      arrange(k_col, cluster, direction, percentile) %>%
+      group_by(k_col, cluster, direction) %>%
+      summarise(
+        sig.area = {
+          x <- percentile
+          y <- ifelse(pval < alpha, above, 0)
+          sum((head(y,-1) + tail(y,-1)) / 2 * diff(x))
+        },
+        .groups = "drop"
+      )
+  }
+  
+  # Wide + net (optional)
+  out_wide <- out %>%
+    tidyr::pivot_wider(names_from = direction, values_from = sig.area, values_fill = 0) %>%
+    mutate(net = positive - negative)  # negative >0 means worse with High Candida
+  
+  list(long = out, wide = out_wide)
+}
+# ---- Plot: one figure per k (diverging bars by cluster) ----
+plot_sig_area_per_k <- function(area_wide, out_dir, alpha = 0.05) {
+  area_wide %>%
+    split(.$k_col) %>%
+    purrr::iwalk(function(ak, k) {
+      ak <- ak %>% mutate(cluster = factor(cluster, levels = sort(unique(as.numeric(cluster)))))
+      p <- ggplot(ak, aes(x = cluster)) +
+        geom_col(aes(y = -negative), fill = "firebrick") +   # HR>=1 area (worse) shown downward
+        geom_col(aes(y = positive),  fill = "steelblue") +   # HR<1 area (better) upward
+        geom_hline(yintercept = 0, linetype = "dashed") +
+        coord_flip() +
+        theme_bw() +
+        labs(title = paste0("Significance area (α = ", alpha, ") — ", k),
+             x = "Cluster", y = "Signed area above significance line\n(+ better with High; − worse with High)")
+      ggsave(file.path(out_dir, paste0("sigarea_", k, ".png")), p, width = 8, height = 6, dpi = 300)
+    })
+}
+
+areas <- sig_area(mts_all_df, alpha = 0.05, method = "sum")  # or method = "trap"
+plot_sig_area_per_k(areas$wide, out_dir = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/mtsurv_scans_Auc", alpha = 0.05)
+
+
+```
+
+
+
+```{r}
+
+# ---------- Inputs ----------
+alpha_thr      <- 1.3          # -log10(p) threshold for "significant"
+min_per_group  <- 3           # need >=10 in High and Low after cutting
+feature_prefix <- "Month_"     # treatment feature prefix (if using treat_df)
+
+# REQUIRED:
+#   mts_all_df (from your mtsurv scans)
+#   Cluster_surv (for Normalize_Candida + Cluster_k* labels)
+# OPTIONAL:
+#   treat_df (sample + one-hot timeline columns starting with feature_prefix)
+#   If not available, set: treat_df <- NULL
+
+stopifnot(all(c("k_col","cluster","percentile","pval","log10p","hazard.direction") %in% names(mts_all_df)))
+stopifnot(all(c("sample","Normalize_Candida") %in% names(Cluster_surv)))
+
+
+# 1) Strongest peak (any direction) per cluster
+best_any <- mts_all_df %>%
+  filter(is.finite(log10p)) %>%
+  group_by(k_col, cluster) %>%
+  summarise(
+    max_any_log10p = max(log10p, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+chosen_pct_tbl <- mts_all_df %>%
+  filter(hazard.direction == ">=1", is.finite(log10p)) %>%
+  arrange(k_col, cluster, desc(log10p)) %>%
+  group_by(k_col, cluster) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  select(k_col, cluster, chosen_percentile = percentile)
+
+# Fallback for clusters with no HR>=1 points: take smallest p
+fallback_pct <- mts_all_df %>%
+  group_by(k_col, cluster) %>%
+  slice_min(order_by = pval, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(k_col, cluster, chosen_percentile = percentile) %>%
+  anti_join(chosen_pct_tbl, by = c("k_col","cluster"))
+
+chosen_pct_tbl <- bind_rows(chosen_pct_tbl, fallback_pct)
+
+# ---------- 2) Count High/Low at chosen percentile (per k × cluster) ----------
+count_groups_allk <- map_dfr(unique(chosen_pct_tbl$k_col), function(kc) {
+  df_k <- Cluster_surv %>%
+    transmute(sample, Normalize_Candida, cluster = .data[[kc]]) %>%
+    filter(!is.na(cluster))
+  cuts <- chosen_pct_tbl %>% filter(k_col == kc)
+  
+  df_k %>%
+    group_by(cluster) %>%
+    group_modify(function(dd, kk) {
+      pct <- cuts$chosen_percentile[cuts$cluster == kk$cluster]
+      cut <- quantile(dd$Normalize_Candida, probs = pct, na.rm = TRUE)
+      tibble(
+        n      = nrow(dd),
+        n_high = sum(dd$Normalize_Candida >= cut),
+        n_low  = sum(dd$Normalize_Candida <  cut)
+      )
+    }) %>%
+    ungroup() %>%
+    mutate(k_col = kc)
+})
+
+# ---------- 3) Sum of “green” AUC (trap) per cluster & per k ----------
+auc_green <- mts_all_df %>%
+  filter(hazard.direction == ">=1", is.finite(log10p)) %>%
+  arrange(k_col, cluster, percentile) %>%
+  group_by(k_col, cluster) %>%
+  summarise(
+    neg_auc = sum((head(log10p,-1) + tail(log10p,-1)) / 2 * diff(percentile)),
+    .groups = "drop"
+  )
+
+auc_green_k <- auc_green %>%
+  group_by(k_col) %>%
+  summarise(sum_neg_auc = sum(neg_auc, na.rm = TRUE), .groups = "drop")
+
+# ---------- 4) Num. of “good” clusters per k ----------
+per_cluster <- best_any %>%
+  mutate(cluster = as.character(cluster)) %>%
+  left_join(
+    count_groups_allk %>% mutate(cluster = as.character(cluster)),
+    by = c("k_col","cluster")
+  ) %>%
+  mutate(
+    pass = (max_any_log10p >= alpha_thr)
+  )
+
+num_sig_k <- per_cluster %>%
+  group_by(k_col) %>%
+  summarise(num_sig_clusters = sum(pass, na.rm = TRUE), .groups = "drop")
+
+##### treatment coherence/separation 
+
+compute_treatment_metrics <- function(treat_df, cluster_df, kc,
+                                      feature_prefix = "Month_",
+                                      exclude_pattern = "_None$") {
+  # pick ID col in treat_df and rename to 'sample'
+  id_col <- dplyr::case_when(
+    "sample" %in% names(treat_df) ~ "sample",
+    "SL_ID"  %in% names(treat_df) ~ "SL_ID",
+    TRUE ~ NA_character_
+  )
+  if (is.na(id_col)) stop("treat_df must have 'sample' or 'SL_ID'")
+  
+  feats <- treat_df %>%
+    dplyr::rename(sample = dplyr::all_of(id_col)) %>%
+    dplyr::select(sample, dplyr::starts_with(feature_prefix)) %>%
+    { if (!is.null(exclude_pattern)) dplyr::select(., -dplyr::matches(exclude_pattern)) else . } %>%
+    dplyr::mutate(dplyr::across(-sample, ~ as.integer(tidyr::replace_na(.x, 0) > 0)))
+  
+  # join cluster labels for this k
+  df_k <- cluster_df %>%
+    dplyr::transmute(sample, cluster = as.character(.data[[kc]])) %>%
+    dplyr::inner_join(feats, by = "sample") %>%
+    dplyr::filter(!is.na(cluster))
+  
+  by_cl <- split(df_k, df_k$cluster)
+  
+  # within-cluster Jaccard similarity (mean over pairs)
+  within_vals <- purrr::map_dbl(by_cl, function(d) {
+    X <- as.matrix(d %>% dplyr::select(-sample, -cluster))
+    if (nrow(X) < 2) return(NA_real_)
+    nz <- rowSums(X) > 0
+    if (sum(nz) < 2) return(NA_real_)
+    X <- X[nz, , drop = FALSE]
+    D <- proxy::dist(X, method = "Jaccard")   # distance in [0,1]
+    1 - mean(D[upper.tri(as.matrix(D), diag = FALSE)], na.rm = TRUE)  # similarity
+  })
+  within_mean <- mean(within_vals, na.rm = TRUE)
+  
+  # between-cluster separation: centroid cosine distance (higher = more distinct)
+  centroids <- purrr::map_dfr(by_cl, ~colMeans(as.matrix(dplyr::select(.x, -sample, -cluster))), .id = "cluster")
+  if (nrow(centroids) >= 2) {
+    C  <- as.matrix(centroids %>% dplyr::select(-cluster))
+    Cn <- sweep(C, 1, sqrt(rowSums(C^2)) + 1e-9, "/")   # L2-normalize rows
+    cos_sim  <- Cn %*% t(Cn)
+    cos_dist <- 1 - cos_sim
+    between_mean <- mean(cos_dist[upper.tri(cos_dist)], na.rm = TRUE)
+  } else {
+    between_mean <- NA_real_
+  }
+  
+  tibble::tibble(k_col = kc, within_mean = within_mean, between_mean = between_mean)
+}
+
+k_cols <- grep("^Cluster_k\\d+$", names(Cluster_surv), value = TRUE)
+treat_metrics <- purrr::map_dfr(k_cols, ~compute_treatment_metrics(treat_for_cluster, Cluster_surv , .x))
+
+
+leaderboard <- num_sig_k %>%
+  left_join(auc_green_k, by = "k_col") %>%
+  left_join(treat_metrics, by = "k_col") %>%
+  arrange(desc(num_sig_clusters), desc(sum_neg_auc), desc(within_mean), desc(between_mean))
+
+leaderboard
+
+# Save
+dir.create("k_leaderboard_out", showWarnings = FALSE)
+readr::write_csv(leaderboard, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Cluster_leaderboard.csv")
+readr::write_csv(per_cluster, "k_leaderboard_out/per_cluster_table.csv")
+
+# ---------- 7) A small overview plot ----------
+
+leaderboard2 <- leaderboard %>%
+  mutate(k_num = as.integer(sub("Cluster_k","", k_col)),
+         frac_pass = num_sig_clusters / k_num)
+
+Rank_plot<- ggplot(leaderboard2, aes(frac_pass, sum_neg_auc, label = paste0("k", k_num))) +
+  geom_point(aes(size = within_mean, alpha = between_mean, color = num_sig_clusters)) +
+  ggrepel::geom_text_repel(min.segment.length = 0, seed = 1) +
+  scale_color_viridis_c(option = "C", end = 0.8) +
+  scale_alpha_continuous(range = c(0.5,1)) +
+  scale_size_continuous(range = c(2,8)) +
+  theme_bw() +
+  labs(title = "k leaderboard",
+       x = "Fraction of clusters passing gate",
+       y = "Sum of green AUC (trap)",
+       color = "# passing clusters",
+       size = "Within similarity",
+       alpha = "Between separation")
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Similarity_Between_clusters.png", Rank_plot, width = 4, height = 5, dpi = 300)
+
+```
+
+```{r}
+kb <- leaderboard  # <-- replace with your object name
+
+df <- kb %>%
+  mutate(
+    k = as.integer(str_extract(k_col, "\\d+")),
+    ratio = between_mean / within_mean,
+    is_target = k %in% c(12,13,14)
+  ) %>%
+  arrange(k)
+
+# Optional: ratio line to reinforce the choice (higher is better)
+p1 <- ggplot(df, aes(x = k, y = ratio)) +
+  geom_line(color = "grey40") +
+  geom_point(size = 2, color = "grey20") +
+  geom_point(data = dplyr::filter(df, k %in% c(14, 19)),
+           color = "#D55E00", size = 3) +
+geom_vline(xintercept = c(14, 19), linetype = "dashed", alpha = 0.4)+
+  labs(title = "Determination of Best Cluster",
+       x = "k (number of clusters)", y = "Separation / Compactness ratio") +
+  theme_bw(base_size = 12) + geom_text(data = df %>% filter(k %in% c(14,19)),
+          aes(label = paste0("k=", k)),
+          vjust = -1, fontface = "bold")+
+  theme(
+    plot.title   = element_text(face = "bold"),
+    axis.title   = element_text(size = 14, face = "bold"),
+    axis.text    = element_text(size = 12, face = "bold")
+  )
+
+p1
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Best_cluster.png", p2, width = 4, height = 5, dpi = 300, limitsize = FALSE)
+
+```
+
+
+
+
+```{r}
+
+# 1) Build contiguous segments from your long treat_df
+#    - uses TimeSinceTreatmentStart (assumed in YEARS)
+#    - drops rows where treatment_group is "None" (and true NAs)
+#    - collapses consecutive visits of the same treatment into one segment
+build_segments_from_long <- function(full_df,
+                                     drop_groups = c("None", NA),
+                                     step_fallback = 1/12,   # ~1 month in years
+                                     gap_mult = 1.5) {
+  
+  df <- full_df %>%
+    transmute(sample,
+              t = as.numeric(TimeSinceTreatmentStart),
+              type = as.character(treatment_group)) %>%
+    filter(!is.na(sample), !is.na(t), !is.na(type)) %>%
+    filter(!(type %in% drop_groups))
+  
+  if (nrow(df) == 0) return(tibble())
+  
+  # Estimate a global step size (median positive delta)
+  global_step <- df %>%
+    arrange(sample, type, t) %>%
+    group_by(sample, type) %>%
+    mutate(dt = t - lag(t)) %>%
+    ungroup() %>%
+    summarise(step = median(dt[dt > 0], na.rm = TRUE)) %>%
+    pull(step)
+  
+  if (is.na(global_step) || !is.finite(global_step)) global_step <- step_fallback
+  
+  segs <- df %>%
+    arrange(sample, type, t) %>%
+    group_by(sample, type) %>%
+    mutate(dt = t - lag(t),
+           new_block = if_else(is.na(dt) | dt > gap_mult * global_step, 1L, 0L),
+           block = cumsum(coalesce(new_block, 1L))) %>%
+    group_by(sample, type, block) %>%
+    summarise(start_year = min(t),
+              end_year   = max(t) + global_step,   # extend to cover the last interval
+              .groups = "drop")
+  
+  segs
+}
+
+segs <- build_segments_from_long(full_df,
+                                 drop_groups = c("None", NA),  # hide "None" months
+                                 step_fallback = 1/12,         # ~monthly
+                                 gap_mult = 1.5)
+
+```
+
+
+```{r}
+
+
+
+
+## Plotting the timeline
+# 2) Plot timelines for all k
+plot_timeline_for_k <- function(
+    kc, Cluster_normal_Surv, segs,
+    out_file,
+    ncols = 3,
+    x_years = 13,
+    # styling
+    palette = c(
+      Ancillary       = "#E1BE6A",
+      Chemo           = "#FDB863",
+      Hormone         = "#DC267F",
+      IO              = "#2CA02C",
+      Small_Molecule  = "#76B7B2",
+      Targeted        = "#4E79A7",
+      Radiation       = "#6A51A3",
+      Other           = "#3182BD",
+      None            = "#C0C0C0"
+    ),
+    base_size = 14,
+    title_size = 20,
+    axis_title_size = 13,
+    axis_text_size = 11,
+    legend_title_size = 12,
+    legend_text_size = 11,
+    bold = TRUE,
+    # ordering: "first_start" (default) or "dominant_share"
+    order_by = c("first_start", "dominant_share")
+) {
+  order_by <- match.arg(order_by)
+  
+  # --- map raw types -> canonical + clip to horizon ---
+  segs_clip <- segs %>%
+    dplyr::mutate(type_raw = as.character(type)) %>%
+    dplyr::mutate(
+      type = dplyr::case_when(
+        stringr::str_detect(type_raw, stringr::regex("radiation|\\brt\\b|xrt|imrt|sbrt|radiother", TRUE)) ~ "Radiation",
+        stringr::str_detect(type_raw, stringr::regex("\\bio\\b|immuno|pembro|nivol|atezo|ipi|pd-1|pd-l1|ctla", TRUE)) ~ "IO",
+        stringr::str_detect(type_raw, stringr::regex("chemo|chemotherapy|platin|taxel|5fu|gemcitabine|doxo", TRUE)) ~ "Chemo",
+        stringr::str_detect(type_raw, stringr::regex("hormone|endocrine|androgen|estrogen|tamox|abiraterone|enzalu|aromatase|letro|anastro|fulves", TRUE)) ~ "Hormone",
+        stringr::str_detect(type_raw, stringr::regex("target|tki|inhibitor|egfr|alk|braf|mek|parp|her2|trast", TRUE)) ~ "Targeted",
+        stringr::str_detect(type_raw, stringr::regex("small[ _-]?molecule|onco.?drug|oncodrug", TRUE)) ~ "Small_Molecule",
+        stringr::str_detect(type_raw, stringr::regex("ancillary|support|palliat", TRUE)) ~ "Ancillary",
+        TRUE ~ "Other"
+      ),
+      t0 = pmax(0, pmin(start_year, x_years)),
+      t1 = pmax(0, pmin(end_year,   x_years))
+    ) %>%
+    dplyr::filter(!is.na(sample), t1 > t0)
+  
+  # --- attach cluster labels ---
+  cl_df <- Cluster_normal_Surv %>%
+    dplyr::transmute(sample, cluster = as.character(.data[[kc]])) %>%
+    dplyr::filter(!is.na(cluster))
+  
+  df <- segs_clip %>% dplyr::inner_join(cl_df, by = "sample")
+  if (nrow(df) == 0) {
+    warning(paste0("No segments to plot for ", kc))
+    return(invisible(NULL))
+  }
+  
+  # cluster counts for facet labels
+  cl_counts <- df %>%
+    dplyr::distinct(cluster, sample) %>%
+    dplyr::count(cluster, name = "n_patients")
+  
+  # choose ordering within cluster
+  if (order_by == "first_start") {
+    order_tbl <- df %>%
+      dplyr::group_by(cluster, sample) %>%
+      dplyr::summarise(first_start = min(t0), .groups = "drop") %>%
+      dplyr::arrange(cluster, first_start, sample) %>%
+      dplyr::group_by(cluster) %>% dplyr::mutate(y = dplyr::row_number()) %>% dplyr::ungroup()
+  } else {
+    # dominant treated-time share within horizon
+    dur <- df %>%
+      dplyr::group_by(cluster, sample, type) %>%
+      dplyr::summarise(dur = sum(t1 - t0), .groups = "drop")
+    tot <- dur %>% dplyr::group_by(cluster, sample) %>% dplyr::summarise(total = sum(dur), .groups = "drop")
+    dom <- dur %>%
+      dplyr::group_by(cluster, sample) %>%
+      dplyr::slice_max(dur, n = 1, with_ties = FALSE) %>%
+      dplyr::ungroup() %>%
+      dplyr::left_join(tot, by = c("cluster","sample")) %>%
+      dplyr::mutate(dom_share = dplyr::if_else(total > 0, dur/total, 0))
+    earliest <- df %>%
+      dplyr::group_by(cluster, sample) %>%
+      dplyr::summarise(earliest = min(t0), .groups = "drop")
+    order_tbl <- dom %>%
+      dplyr::left_join(earliest, by = c("cluster","sample")) %>%
+      dplyr::arrange(cluster, dplyr::desc(dom_share), earliest, sample) %>%
+      dplyr::group_by(cluster) %>% dplyr::mutate(y = dplyr::row_number()) %>% dplyr::ungroup()
+  }
+  
+  # merge order + tidy factors
+  df <- df %>%
+    dplyr::left_join(order_tbl, by = c("cluster","sample")) %>%
+    dplyr::left_join(cl_counts, by = "cluster") %>%
+    dplyr::mutate(
+      cluster_num = suppressWarnings(as.integer(cluster)),
+      cluster_lab = paste0("c", ifelse(is.na(cluster_num), cluster, cluster_num),
+                           " (n=", n_patients, ")"),
+      cluster_lab = factor(cluster_lab, levels = unique(cluster_lab))
+    )
+  
+  # x-limit
+  xmax <- if (is.null(x_years)) ceiling(max(df$t1, na.rm = TRUE)) else x_years
+  
+  # palette subset to present types
+  present_types <- sort(unique(df$type))
+  pal_use <- palette[names(palette) %in% present_types]
+  
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = t0, xend = t1, y = y, yend = y, color = type)) +
+    ggplot2::geom_segment(linewidth = 0.55, lineend = "butt") +
+    ggplot2::facet_wrap(~ cluster_lab, scales = "free_y", ncol = ncols) +
+    ggplot2::scale_color_manual(values = pal_use, drop = FALSE,
+                                guide = ggplot2::guide_legend(ncol = 1, title = "Treatment Type")) +
+    ggplot2::scale_x_continuous(limits = c(0, xmax), breaks = 0:xmax,
+                                expand = ggplot2::expansion(mult = c(0, 0.02))) +
+    ggplot2::labs(
+      title = paste0("Treatment timelines — ", kc),
+      x = "Time Since First Treatment (Years)",
+      y = "Patient"
+    ) +
+    ggplot2::theme_bw(base_size = base_size) +
+    ggplot2::theme(
+      strip.background = ggplot2::element_rect(fill = "grey92", color = "grey70"),
+      panel.spacing    = grid::unit(0.7, "lines"),
+      axis.text.y      = ggplot2::element_blank(),
+      axis.ticks.y     = ggplot2::element_blank(),
+      legend.position  = "right",
+      # bold + sizes
+      text          = ggplot2::element_text(face = if (bold) "bold" else "plain"),
+      plot.title    = ggplot2::element_text(size = title_size, face = if (bold) "bold" else "plain"),
+      axis.title    = ggplot2::element_text(size = axis_title_size, face = if (bold) "bold" else "plain"),
+      axis.text     = ggplot2::element_text(size = axis_text_size, face = if (bold) "bold" else "plain"),
+      legend.title  = ggplot2::element_text(size = legend_title_size, face = if (bold) "bold" else "plain"),
+      legend.text   = ggplot2::element_text(size = legend_text_size,  face = if (bold) "bold" else "plain")
+    )
+  
+  ggplot2::ggsave(out_file, p, width = 20, height = 12, dpi = 150, limitsize = FALSE)
+  p
+}
+
+
+# 3) Build segments from your long file and save PNGs for k=13,14,15
+
+
+k_cols <- paste0("Cluster_k", 3:20)
+
+
+# keep only those that actually exist in your data:
+k_cols <- intersect(k_cols, names(Cluster_surv))
+
+
+dir.create("//users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/dt_timelines_demo", showWarnings = FALSE)
+for (kc in k_cols) {
+  plot_timeline_for_k(
+    kc,
+    Cluster_normal_Surv = Cluster_surv,  # or Cluster_normal_Surv_2 if that’s your current object
+    segs = segs,
+    out_file = file.path("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/dt_timelines_demo", paste0("timelines_", kc, ".png")),
+    ncols   = 3,
+    x_years = 6
+  )
+}
+
+```
+
+```{r}
+## The main part
+
+## Preparing the main file
+
+Cluster_surv_2<- Cluster_surv %>% left_join(full_df %>% select(sample,Stage,Sex,BMI) %>% unique(),by="sample")
+Cluster_surv_2<- Cluster_surv_2 %>% left_join(NSCLC_metadata %>% 
+                                                select(sample,Age,ProgRecurInd,SmokingStatus) %>% unique(), by= "sample")
+Cluster_surv_2 <- Cluster_surv_2 %>%
+  mutate(
+    SmokingStatus = case_when(
+      str_detect(tolower(SmokingStatus), "never") ~ "Never",
+      str_detect(tolower(SmokingStatus), "former|ever") ~ "Former",
+      str_detect(tolower(SmokingStatus), "current|active") ~ "Current",
+      TRUE ~ NA_character_
+    )
+  )
+
+Cluster_surv_2<- Cluster_surv_2 %>% mutate(Stage= ifelse(Stage %in% c("I","II"), "Early","Advanced"))
+  
+tx_cols <- c(
+  Ancillary      = "#E1BE6A",
+  Chemo          = "#FDB863",
+  Hormone        = "#DC267F",
+  IO             = "#2CA02C",
+  Small_Molecule = "#76B7B2",
+  Targeted       = "#4E79A7",
+  Radiation      = "#6A51A3",
+  Others         = "#8C8C8C"
+)
+
+# make sure ALL of these are allowed focus types
+valid_types <- c(
+  "Ancillary","Chemo","Hormone","IO",
+  "Small_Molecule","Targeted","Radiation","Others"
+)
+
+ 
+ ca_cols <- c(High = "#F28E2B", Low = "#56B4E9")
+ valid_types <- names(tx_cols)[names(tx_cols) != "None"]
+ k_label <- function(kc) sub("^Cluster_k(\\d+)$", "k\\1", kc)
+ 
+ # -------- segments -> canonical types --------
+ prep_segs <- function(segs, horizon_years = 5) {
+   stopifnot("sample" %in% names(segs),
+             "type"   %in% names(segs),
+             "start_year" %in% names(segs),
+             "end_year"   %in% names(segs))
+   
+   segs %>%
+     dplyr::mutate(type_raw = as.character(.data$type)) %>%      # step 1: create type_raw
+     dplyr::mutate(                                              # step 2: recode type
+       type = dplyr::case_when(
+         stringr::str_detect(.data$type_raw, stringr::regex("radiation|\\brt\\b|xrt|imrt|sbrt|radiother", TRUE)) ~ "Radiation",
+         stringr::str_detect(.data$type_raw, stringr::regex("\\bio\\b|immuno|pembro|nivol|atezo|ipi|pd-1|pd-l1|ctla", TRUE)) ~ "IO",
+         stringr::str_detect(.data$type_raw, stringr::regex("chemo|chemotherapy|platin|taxel|5fu|gemcitabine|doxo", TRUE)) ~ "Chemo",
+         stringr::str_detect(.data$type_raw, stringr::regex("target|tki|inhibitor|egfr|alk|braf|mek|parp|her2|trast", TRUE)) ~ "Targeted",
+         stringr::str_detect(.data$type_raw, stringr::regex("hormone|endocrine|androgen|estrogen|tamox|abiraterone|enzalu|aromatase|letro|anastro|fulves", TRUE)) ~ "Hormone",
+         # new class replacing OncoDrug:
+         stringr::str_detect(.data$type_raw, stringr::regex("small[ _-]?molecule|onco.?drug|oncodrug", TRUE)) ~ "Small_Molecule",stringr::str_detect(type_raw, stringr::regex("ancillary|support|palliat|pain control|bisphosphonate", TRUE)) ~ "Ancillary",
+         TRUE ~ "Others"
+       ),
+       t0 = pmax(0, pmin(.data$start_year, horizon_years)),
+       t1 = pmax(0, pmin(.data$end_year,   horizon_years))
+     ) %>%
+     dplyr::filter(!is.na(.data$sample), !is.na(.data$t0), !is.na(.data$t1), .data$t1 > .data$t0)
+ }
+ # -------- per-sample durations & shares (for all valid types) --------
+ treatment_shares <- function(segs_prepped) {
+   wide <- segs_prepped %>%
+     group_by(sample, type) %>%
+     summarise(dur = sum(t1 - t0), .groups = "drop") %>%
+     tidyr::pivot_wider(names_from = type, values_from = dur, values_fill = 0)
+   
+   # ensure all treatment columns exist
+   for (nm in c(valid_types, "None")) if (!nm %in% names(wide)) wide[[nm]] <- 0
+   
+   wide %>%
+     mutate(
+       dur_all     = rowSums(across(c(valid_types, "None"))),
+       dur_treated = rowSums(across(all_of(valid_types))),
+       # shares among treated time for every type
+       across(all_of(valid_types),
+              ~ ifelse(dur_treated > 0, .x / dur_treated, 0),
+              .names = "share_{col}_tx")
+     ) %>%
+     mutate(
+       # dominant treated-time type across all valid types
+       dom_type_tx = {
+         shares <- as.matrix(select(., starts_with("share_"), ends_with("_tx")))
+         colnames(shares) <- gsub("^share_|_tx$", "", colnames(shares))
+         valid_types[pmax(col(shares)[max.col(shares, ties.method = "first")], 1)]
+       }
+     )
+ }
+ 
+ # -------- KM with optional risk table --------
+ km_panel_from_df <- function(
+    df, group_col="CAlevel", title="", horizon_years=NULL,
+    risk_table=TRUE, risk_times=NULL, risk_table_height=0.28, risk_text_size=4,
+    # NEW styling knobs
+    base_size = 16,
+    title_size = 22,
+    axis_title_size = 14,
+    axis_text_size  = 12,
+    legend_title_size = 14,
+    legend_text_size  = 12,
+    bold = TRUE
+ ){
+   stopifnot(all(c("diagsurvtime","status",group_col) %in% names(df)))
+   norm <- c("high"="High","High"="High","low"="Low","Low"="Low","HIGH"="High","LOW"="Low")
+   df[[group_col]] <- norm[tolower(df[[group_col]])]
+   df <- df %>% filter(!is.na(.data[[group_col]]))
+   df[[group_col]] <- factor(df[[group_col]], levels = c("High","Low"))
+   
+   if (dplyr::n_distinct(df[[group_col]]) < 2) {
+     return(
+       ggplot() + annotate("text", x=.5, y=.5, label="Only one CA group in subset", size=5) +
+         labs(title = title, x="Years", y="Survival") + theme_minimal(base_size = 12)
+     )
+   }
+   
+   form <- as.formula(paste("Surv(diagsurvtime, status) ~", group_col))
+   fit  <- survfit(form, data = df)
+   td   <- broom::tidy(fit); td$group <- sub(".*=", "", td$strata); td$group <- factor(td$group, levels=c("High","Low"))
+   
+   # make sure we start at time 0 at S=1
+   if (!any(td$time == 0 & td$group == "High")) td <- bind_rows(tibble(time=0, estimate=1, conf.low=1, conf.high=1, strata=paste0(group_col,"=High"), n.risk=NA, n.event=NA, n.censor=NA, group=factor("High", c("High","Low"))), td)
+   if (!any(td$time == 0 & td$group == "Low"))  td <- bind_rows(tibble(time=0, estimate=1, conf.low=1, conf.high=1, strata=paste0(group_col,"=Low"),  n.risk=NA, n.event=NA, n.censor=NA, group=factor("Low",  c("High","Low"))), td)
+   td <- td %>% arrange(group, time)
+   
+   lr   <- survdiff(form, data = df)
+   pval <- if (is.finite(lr$chisq)) pchisq(lr$chisq, df = 1, lower.tail = FALSE) else NA_real_
+   
+   km <- ggplot2::ggplot(td, ggplot2::aes(x=time, y=estimate, colour=group, fill=group)) +
+     ggplot2::geom_ribbon(ggplot2::aes(ymin=conf.low, ymax=conf.high), alpha=.20, linewidth=0) +
+     ggplot2::geom_step(linewidth=1.1) +
+     ggplot2::scale_colour_manual(values=ca_cols, drop=FALSE) +
+     ggplot2::scale_fill_manual(values=ca_cols, drop=FALSE) +
+     ggplot2::labs(x="Years", y="Survival", title=title,
+                   subtitle=sprintf("CA grouping: provided | log-rank p = %s",
+                                    ifelse(is.na(pval), "NA", signif(pval, 3)))) +
+     ggplot2::theme_minimal(base_size = base_size) +
+     ggplot2::theme(
+       legend.position = "right",
+       text            = ggplot2::element_text(face = if (bold) "bold" else "plain"),
+       plot.title      = ggplot2::element_text(size = title_size),
+       axis.title      = ggplot2::element_text(size = axis_title_size),
+       axis.text       = ggplot2::element_text(size = axis_text_size),
+       legend.title    = ggplot2::element_text(size = legend_title_size),
+       legend.text     = ggplot2::element_text(size = legend_text_size)
+     )
+   if (!is.null(horizon_years)) km <- km + coord_cartesian(xlim = c(0, horizon_years))
+   
+   if (!risk_table) return(km)
+   
+   if (is.null(risk_times)) risk_times <- if (!is.null(horizon_years)) 0:horizon_years else pretty(range(df$diagsurvtime, na.rm = TRUE), n=6)
+   sm <- summary(fit, times = risk_times, extend = TRUE)
+   rt <- tibble(time = sm$time, group = sub(".*=", "", as.character(sm$strata)), n_risk = sm$n.risk)
+   rt$group <- factor(rt$group, levels=c("High","Low"))
+   
+   risk <- ggplot(rt, aes(x=time, y=group, label=n_risk, colour=group)) +
+     geom_text(size=risk_text_size, show.legend=FALSE) +
+     scale_colour_manual(values=ca_cols, drop=FALSE) +
+     scale_x_continuous(breaks = risk_times, limits = range(risk_times)) +
+     labs(x=NULL, y="At risk") +
+     theme_minimal(base_size=11) +
+     theme(panel.grid.major.y=element_blank(), panel.grid.minor=element_blank(), legend.position="none")
+   
+   (km + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())) /
+     risk + plot_layout(heights = c(1, risk_table_height))
+ }
+ 
+ ## Helper function
+ # Does `pattern` appear as a contiguous subsequence of `seq`?
+has_subseq <- function(seq, pattern) {
+  seq     <- as.character(seq)
+  pattern <- as.character(pattern)
+  n <- length(seq)
+  m <- length(pattern)
+  if (m == 0L) return(TRUE)
+  if (m > n)  return(FALSE)
+  for (i in seq_len(n - m + 1L)) {
+    if (all(seq[i:(i + m - 1L)] == pattern)) return(TRUE)
+  }
+  FALSE
+}
+
+ 
+ # -------- timeline plot (shows all available types) --------
+ timeline_panel <- function(
+  segs_prepped, share_df, twin_ids,
+  title = "Top twins",
+  horizon_years = 5,
+  base_size = 16, title_size = 22, axis_title_size = 14, axis_text_size = 12,
+  legend_title_size = 14, legend_text_size = 12, bold = TRUE
+){
+  # restrict to selected twins and attach shares
+  segs_plot <- segs_prepped %>%
+    dplyr::semi_join(tibble::tibble(sample = twin_ids), by = "sample") %>%
+    dplyr::left_join(
+      share_df %>% dplyr::select(sample, starts_with("share_"), dur_treated),
+      by = "sample"
+    ) %>%
+    dplyr::mutate(
+      # order samples by (e.g.) Radiation share, as before
+      sample = forcats::fct_reorder(
+        sample,
+        !!rlang::sym("share_Radiation_tx"),
+        .desc = TRUE
+      ),
+      sample_idx = as.numeric(sample),  # numeric index for plotting
+      type      = factor(type, levels = names(tx_cols)),
+      type_idx  = as.numeric(type)
+    )
+used_types <- intersect(
+  names(tx_cols),
+  unique(as.character(segs_plot$type))
+)
+  # vertical offset per treatment type (keeps them close to label line)
+  offset_scale <- 0.10
+  segs_plot <- segs_plot %>%
+    dplyr::mutate(
+      y_pos = sample_idx + (type_idx - mean(type_idx)) * offset_scale
+    )
+
+  # breaks at the "base" positions (integer indices), labels = sample IDs
+  y_breaks <- sort(unique(segs_plot$sample_idx))
+  y_labels <- levels(segs_plot$sample)
+
+  ggplot2::ggplot(segs_plot) +
+    ggplot2::geom_segment(
+      ggplot2::aes(
+        x    = t0,
+        xend = t1,
+        y    = y_pos,
+        yend = y_pos,
+        colour = type
+      ),
+      linewidth = 2
+    ) +
+    ggplot2::scale_colour_manual(
+  values = tx_cols[used_types],
+  breaks = used_types,
+  drop   = FALSE,
+  name   = "Treatment Type"
+) +
+    ggplot2::scale_x_continuous(
+      limits = c(0, horizon_years),
+      breaks = 0:horizon_years,
+      name   = "Years since first treatment"
+    ) +
+    ggplot2::scale_y_continuous(
+      breaks = y_breaks,
+      labels = y_labels,
+      name   = "Twin sample"
+    ) +
+    ggplot2::labs(title = title) +
+    ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(
+      legend.position = "right",
+      text            = ggplot2::element_text(
+        face = if (bold) "bold" else "plain"
+      ),
+      plot.title      = ggplot2::element_text(size = title_size),
+      axis.title      = ggplot2::element_text(size = axis_title_size),
+      axis.text       = ggplot2::element_text(size = axis_text_size),
+      legend.title    = ggplot2::element_text(size = legend_title_size),
+      legend.text     = ggplot2::element_text(size = legend_text_size)
+    )
+}
+
+ 
+ # -------- forest (same as your latest; keeps Age/Stage/Sex/BMI) --------
+ cox_forest_plot_from_df <- function(
+    df,
+    covars = c("CAlevel","Stage","Sex","BMI","Age"),
+    ref_levels = list(CAlevel="Low", Stage="Early"),
+    title = "Adjusted Cox — twins only",
+    min_epv = 5,
+    priority = c("CAlevel","Age","Stage","Sex","BMI"),
+    numeric_scale = list(Age = 10),
+    numeric_units = list(Age = "years"),
+    numeric_pretty = list(Age = "Age at diagnosis"),
+    # NEW styling knobs
+    base_size = 16,
+    title_size = 22,
+    axis_title_size = 14,
+    axis_text_size  = 12,
+    bold = TRUE
+ ){
+   need <- unique(c("sample","diagsurvtime","status", covars))
+   if (length(setdiff(need, names(df)))) {
+     miss <- paste(setdiff(need, names(df)), collapse=", ")
+     return(
+       ggplot2::ggplot() +
+         ggplot2::annotate("text", x=.5, y=.5, label=paste("Missing:", miss)) +
+         ggplot2::labs(title=title) +
+         ggplot2::theme_void(base_size = base_size) +
+         ggplot2::theme(text = ggplot2::element_text(face = if (bold) "bold" else "plain"),
+                        plot.title = ggplot2::element_text(size = title_size))
+     )
+   }
+   
+   d0 <- df[, need, drop=FALSE]
+   for (nm in names(ref_levels)) if (!is.null(ref_levels[[nm]]) && nm %in% names(d0)) {
+     d0[[nm]] <- factor(d0[[nm]]); if (ref_levels[[nm]] %in% levels(d0[[nm]])) d0[[nm]] <- stats::relevel(d0[[nm]], ref=ref_levels[[nm]])
+   }
+   safe_num <- function(x) suppressWarnings(as.numeric(as.character(x)))
+   for (nm in intersect(c("BMI","Age"), names(d0))) if (!is.numeric(d0[[nm]])) d0[[nm]] <- safe_num(d0[[nm]])
+   for (nm in names(numeric_scale)) if (nm %in% names(d0) && is.numeric(d0[[nm]]) && numeric_scale[[nm]]>0) d0[[nm]] <- d0[[nm]]/numeric_scale[[nm]]
+   
+   d <- stats::na.omit(d0); n <- nrow(d); ev <- sum(d$status==1, na.rm=TRUE)
+   if (n < 10 || ev < 3) {
+     return(
+       ggplot2::ggplot() +
+         ggplot2::annotate("text", x=.5, y=.6, label=sprintf("n=%d, events=%d", n, ev)) +
+         ggplot2::annotate("text", x=.5, y=.4, label="Too few complete cases") +
+         ggplot2::labs(title=title) +
+         ggplot2::theme_void(base_size = base_size) +
+         ggplot2::theme(text = ggplot2::element_text(face = if (bold) "bold" else "plain"),
+                        plot.title = ggplot2::element_text(size = title_size))
+     )
+   }
+   
+   varies <- function(v){ x <- d[[v]]; if (is.numeric(x)) var(x, na.rm=TRUE)>0 else dplyr::n_distinct(x)>1 }
+   cov_keep <- covars[sapply(covars, varies)]; if (!length(cov_keep)) cov_keep <- "CAlevel"
+   param_count <- function(v) if (is.numeric(d[[v]])) 1L else max(1L, dplyr::n_distinct(d[[v]])-1L)
+   max_params <- max(1L, floor(ev/min_epv))
+   cov_keep <- unique(c(intersect(priority, cov_keep), setdiff(cov_keep, priority)))
+   pick <- character(0); used <- 0L
+   for (v in cov_keep) { pv <- as.integer(param_count(v)); if (v=="CAlevel" || used+pv<=max_params) { pick <- c(pick,v); used <- used+pv } }
+   if (!"CAlevel" %in% pick) pick <- c("CAlevel", setdiff(pick, "CAlevel"))
+   
+   fit_ok <- FALSE; used_cov <- pick
+   while (!fit_ok && length(used_cov)) {
+     form <- as.formula(paste("survival::Surv(diagsurvtime, status) ~", paste(used_cov, collapse=" + ")))
+     fit  <- try(survival::coxph(form, data=d, ties="efron"), silent=TRUE)
+     fit_ok <- !inherits(fit, "try-error"); if (!fit_ok) used_cov <- head(used_cov, -1)
+   }
+   if (!fit_ok) { used_cov <- "CAlevel"; fit <- survival::coxph(survival::Surv(diagsurvtime, status) ~ CAlevel, data=d, ties="efron") }
+   
+   tt <- broom::tidy(fit, exponentiate=TRUE, conf.int=TRUE)
+   if (!nrow(tt)) {
+     return(
+       ggplot2::ggplot() +
+         ggplot2::annotate("text", x=.5, y=.5, label="No estimable coefficients") +
+         ggplot2::labs(title=title) +
+         ggplot2::theme_void(base_size = base_size) +
+         ggplot2::theme(text = ggplot2::element_text(face = if (bold) "bold" else "plain"),
+                        plot.title = ggplot2::element_text(size = title_size))
+     )
+   }
+   
+   pretty_term <- function(term){
+     for (v in used_cov) if (startsWith(term, v)) {
+       suf <- gsub("^[:.=]", "", sub(paste0("^", v), "", term))
+       if (suf=="") {
+         if (v %in% names(numeric_scale)) {
+           nm <- if (!is.null(numeric_pretty[[v]])) numeric_pretty[[v]] else gsub("_"," ", v)
+           unit <- if (!is.null(numeric_units[[v]])) numeric_units[[v]] else "units"
+           return(sprintf("%s (per %s %s)", nm, numeric_scale[[v]], unit))
+         } else return(v)
+       } else {
+         ref <- NULL; if (v %in% names(ref_levels) && !is.null(ref_levels[[v]])) ref <- paste0(" (ref=", ref_levels[[v]], ")")
+         return(paste0(v, ": ", suf, ifelse(is.null(ref), "", ref)))
+       }
+     }
+     term
+   }
+   tt$label <- vapply(tt$term, pretty_term, character(1))
+   tt <- tt %>% dplyr::filter(!is.na(estimate)) %>%
+     dplyr::mutate(label=factor(label, levels=rev(unique(label))))
+   
+   xr <- range(tt$conf.low, tt$conf.high, na.rm=TRUE); if (!all(is.finite(xr))) xr <- c(0.5,2)
+   xpad <- exp(log(xr) + c(-0.25,0.25))
+   
+   ggplot2::ggplot(tt, ggplot2::aes(y=label, x=estimate)) +
+     ggplot2::geom_vline(xintercept=1, linetype=2) +
+     ggplot2::geom_errorbarh(ggplot2::aes(xmin=conf.low, xmax=conf.high), height=0.2, linewidth=1) +
+     ggplot2::geom_point(size=3) +
+     ggplot2::scale_x_log10(limits=xpad) +
+     ggplot2::labs(x="Hazard Ratio (log scale)", y=NULL, title=title,
+                   subtitle=sprintf("complete cases n=%d (of %d twins), events=%d; covars used: %s",
+                                    n, nrow(df), ev, paste(used_cov, collapse=", "))) +
+     ggplot2::theme_minimal(base_size = base_size) +
+     ggplot2::theme(
+       text        = ggplot2::element_text(face = if (bold) "bold" else "plain"),
+       plot.title  = ggplot2::element_text(size = title_size),
+       axis.title  = ggplot2::element_text(size = axis_title_size),
+       axis.text   = ggplot2::element_text(size = axis_text_size)
+     )
+ }
+ 
+ 
+ # -------- orchestrator: focus on user-selected treatment types --------
+run_tx_focus_row <- function(
+  Cluster_surv, segs,
+  kc = "Cluster_k14", cl = NULL,
+  focus_types   = c("Radiation"),
+  group_col     = "CAlevel",
+  horizon_years = 5,
+  n_twins       = 20,
+  min_share_tx  = 0.33,
+  
+  # sequence options
+  enforce_sequence = FALSE,
+  seq_pattern      = NULL,
+  sequence_strict  = FALSE,
+  
+  
+  # NEW: how to treat the *start* of treatment
+  # "all"         = no restriction
+  # "single_only" = first_t0 must have exactly 1 type (no combo)
+  # "combo_only"  = first_t0 must have >=2 focus types (e.g. Chemo+IO)
+  start_filter = c("all", "single_only", "combo_only"),
+  pure_focus_only  = FALSE,
+  
+  # forest controls
+  add_forest  = TRUE,
+  cox_covars  = c("CAlevel","Stage","Sex","BMI","Age","SmokingStatus","ProgRecurInd"),
+  cox_ref_levels = list(CAlevel="Low", Stage="Early",
+                        SmokingStatus = "Never", ProgRecurInd="No"),
+  forest_min_epv = 1,
+  forest_priority = c("CAlevel","Age","Stage","Sex","BMI",
+                      "SmokingStatus","ProgRecurInd"),
+  forest_numeric_scale = list(Age = 5),
+  forest_numeric_units = list(Age = "years"),
+  forest_drop_stage_unknown   = FALSE,
+  forest_stage_unknown_levels = c("Unknown","Unknown/Not Applicable","Not Applicable"),
+  
+  # KM risk table
+  km_risk_table        = TRUE,
+  km_risk_table_height = 0.26,
+  show_km_legend       = FALSE,
+  
+  # styling
+  base_size  = 14,
+  title_size = 16,
+  widths     = c(1.4, 1, 1)
+){
+  # ---- arg matching & basic checks ----
+  start_filter <- match.arg(start_filter)
+  km_on <- "twins"
+  
+  focus_types <- intersect(focus_types, valid_types)
+  stopifnot(length(focus_types) >= 1)
+  
+  # ---- prep & shares ----
+  segs_prep <- prep_segs(segs, horizon_years = horizon_years)
+  share_df  <- treatment_shares(segs_prep)
+  
+  # ---- build per-sample sequences & first-time info ----
+  seq_tbl <- segs_prep %>%
+    dplyr::arrange(sample, t0) %>%
+    dplyr::group_by(sample) %>%
+    dplyr::summarise(
+      # collapsed treatment path (Chemo, Chemo, IO → Chemo, IO)
+      tx_seq = list({
+        v <- as.character(type)
+        rle(v)$values
+      }),
+      # named vector of first t0 per type
+      first_time = list({
+        sp <- split(t0, type)
+        vapply(sp, min, numeric(1))
+      }),
+      first_t0    = min(t0),
+      types_first = list(unique(type[t0 == first_t0])),
+      .groups = "drop"
+    )
+  
+  # default sequence pattern: use focus_types in given order
+  if (enforce_sequence && is.null(seq_pattern)) {
+    seq_pattern <- focus_types
+  }
+  
+  # ---- choose cluster if not given: max median focus share ----
+  if (is.null(cl)) {
+    cl <- Cluster_surv %>%
+      dplyr::select(sample, cluster = .data[[kc]]) %>%
+      dplyr::left_join(share_df, by = "sample") %>%
+      dplyr::group_by(cluster) %>%
+      dplyr::summarise(
+        med_focus = median(
+          rowSums(
+            dplyr::across(all_of(paste0("share_", focus_types, "_tx")))
+          ),
+          na.rm = TRUE
+        ),
+        .groups = "drop"
+      ) %>%
+      dplyr::arrange(dplyr::desc(med_focus)) %>%
+      dplyr::slice_head(n = 1) %>%
+      dplyr::pull(cluster)
+  }
+  
+  # ---- restrict to chosen cluster ----
+  df_cl <- Cluster_surv %>%
+    dplyr::filter(.data[[kc]] == cl)
+  
+  # ---- candidate twin set ----
+  cand <- df_cl %>%
+    dplyr::select(sample) %>%
+    dplyr::left_join(share_df, by = "sample") %>%
+    dplyr::left_join(seq_tbl,  by = "sample") %>%   # adds tx_seq, first_time, first_t0, types_first
+    dplyr::mutate(
+      # total focus-type share
+      focus_share_tx = rowSums(
+        dplyr::across(all_of(paste0("share_", focus_types, "_tx"))),
+        na.rm = TRUE
+      ),
+      
+      
+      # ANY combo at start: more than one distinct type at first_t0
+      combo_start_any = vapply(
+        types_first,
+        function(tt) length(unique(tt)) >= 2L,
+        logical(1)
+      ),
+      
+      # combo of FOCUS types at start (for "combo_only" mode)
+      combo_focus_start = vapply(
+        types_first,
+        function(tt) {
+          tt <- as.character(tt)
+          sum(tt %in% focus_types) >= 2L
+        },
+        logical(1)
+      ),
+      
+      only_focus_types = vapply(
+      tx_seq,
+      function(v) all(as.character(v) %in% focus_types),
+      logical(1)
+    ),
+      # sequence OK?
+      seq_ok = if (!enforce_sequence || is.null(seq_pattern)) {
+        TRUE
+      } else if (!sequence_strict) {
+        vapply(tx_seq, has_subseq, logical(1), pattern = seq_pattern)
+      } else {
+        vapply(first_time, function(ft) {
+          times <- ft[seq_pattern]
+          if (any(is.na(times)))    return(FALSE)
+          if (anyDuplicated(times)) return(FALSE)
+          all(diff(times) > 0)
+        }, logical(1))
+      }
+    ) %>%
+    dplyr::  filter(
+    dur_treated > 0,
+    seq_ok,
+    case_when(
+      start_filter == "all"         ~ TRUE,
+      start_filter == "single_only" ~ !combo_start_any,
+      start_filter == "combo_only"  ~ combo_focus_start,
+      TRUE                          ~ TRUE
+    ),
+    if (pure_focus_only) only_focus_types else TRUE
+  ) %>%
+    dplyr::arrange(
+      dplyr::desc(focus_share_tx),
+      dplyr::desc(dur_treated)
+    )
+  
+  # ---- dominance filter (always applied) ----
+  sel <- cand %>%
+    dplyr::filter(
+      dom_type_tx %in% focus_types,
+      focus_share_tx >= min_share_tx
+    ) %>%
+    dplyr::pull(sample) %>%
+    unique()
+  
+  # ---- relax focus_share threshold if not enough twins ----
+  thr <- min_share_tx
+  while (length(sel) < min(n_twins, nrow(cand)) && thr > 0) {
+    thr <- thr - 0.05
+    add <- cand %>%
+      dplyr::filter(focus_share_tx >= thr) %>%
+      dplyr::pull(sample)
+    sel <- unique(c(sel, add))
+  }
+  if (length(sel) < min(n_twins, nrow(cand))) {
+    sel <- unique(c(sel, cand$sample))
+  }
+  twin_ids <- head(sel, min(n_twins, nrow(cand)))
+  
+  df_twins <- df_cl %>%
+    dplyr::semi_join(tibble::tibble(sample = twin_ids), by = "sample")
+  focus_label <- paste(focus_types, collapse = "+")
+  
+  # helper to apply sizes to any ggplot
+  apply_sizes <- function(p) {
+    p + ggplot2::theme(
+      text       = ggplot2::element_text(size = base_size),
+      plot.title = ggplot2::element_text(size = title_size, face = "bold")
+    )
+  }
+  
+  # ---- panels ----
+  p_timeline <- timeline_panel(
+    segs_prep, share_df, twin_ids,
+    title = sprintf(
+      "Top-%d twins (%s focus) in %s cl%s",
+      length(twin_ids), focus_label, k_label(kc), cl
+    ),
+    horizon_years = horizon_years
+  ) |> apply_sizes()
+  
+  p_km <- km_panel_from_df(
+    df_twins, group_col = group_col,
+    title = sprintf(
+      "KM in %s (cluster %s) — twins only (n=%d, focus=%s)",
+      k_label(kc), cl, length(twin_ids), focus_label
+    ),
+    horizon_years      = horizon_years,
+    risk_table         = km_risk_table,
+    risk_times         = 0:horizon_years,
+    risk_table_height  = km_risk_table_height
+  ) |> apply_sizes()
+  
+  if (!show_km_legend) {
+    p_km <- p_km + ggplot2::theme(legend.position = "none")
+  }
+  
+  if (add_forest) {
+    df_forest <- df_twins
+    if (forest_drop_stage_unknown && "Stage" %in% names(df_forest)) {
+      df_forest <- df_forest %>%
+        dplyr::mutate(Stage = as.character(Stage)) %>%
+        dplyr::filter(!is.na(Stage), !(Stage %in% forest_stage_unknown_levels))
+      if (nrow(df_forest)) {
+        df_forest$Stage <- factor(df_forest$Stage)
+        if (!is.null(cox_ref_levels$Stage) &&
+            cox_ref_levels$Stage %in% levels(df_forest$Stage)) {
+          df_forest$Stage <- stats::relevel(df_forest$Stage, ref = cox_ref_levels$Stage)
+        }
+      }
+    }
+    
+    p_forest <- cox_forest_plot_from_df(
+      df_forest,
+      covars        = cox_covars,
+      ref_levels    = cox_ref_levels,
+      title         = sprintf(
+        "Adjusted Cox — twins only (focus=%s%s)",
+        focus_label,
+        if (forest_drop_stage_unknown) ", Stage unknown excluded" else ""
+      ),
+      min_epv       = forest_min_epv,
+      priority      = forest_priority,
+      numeric_scale = forest_numeric_scale,
+      numeric_units = forest_numeric_units
+    ) |> apply_sizes()
+  } else {
+    p_forest <- ggplot2::ggplot() +
+      ggplot2::theme_void() +
+      ggplot2::labs(title = "Forest (omitted)") |>
+      apply_sizes()
+  }
+  
+  # ---- compose in one row ----
+  p_row <- (p_timeline | p_km | p_forest) +
+    patchwork::plot_layout(widths = widths, guides = "keep")
+  
+  attr(p_row, "twin_ids") <- twin_ids
+  p_row
+}
+
+
+
+ # -----------------------
+ # Example calls
+ # -----------------------
+ 
+ p_io <- run_tx_focus_row(
+  Cluster_surv, segs,
+  kc = "Cluster_k13", cl = 1,
+  focus_types  = c("Chemo","Radiation"),
+  n_twins      = 50,
+  min_share_tx = 0.33,
+  start_filter = "single_only" ,
+  enforce_sequence = TRUE,
+  sequence_strict = T
+)
+
+p_io_pure <- run_tx_focus_row(
+  Cluster_surv_2, segs,
+  kc = "Cluster_k13", cl = 3,
+  focus_types     = c("Chemo","IO"),
+  n_twins        = 30,
+  min_share_tx   = 0.33,
+  start_filter   = "all",  # optional but still nice
+  pure_focus_only = TRUE
+)
+
+ ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Demo_1.png", p_io, width = 40, height = 8, dpi = 300)
+ 
 ```

@@ -1,0 +1,195 @@
+---
+title: "Tx_Cluster"
+author: "Dipankor Dhrubo"
+date: "2025-12-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(umap)
+library(survival)
+library(survminer)
+library(factoextra)
+library(scales)
+library(proxy)
+library(patchwork)
+library(forcats)
+```
+
+
+```{r}
+NSCLC_metadata <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% select(-Race)
+Normalized_timeline <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Normalized_timeline.csv")
+
+
+tx_cluster_surv <-function(
+  NSCLC_metadata,
+  timeline_long_norm,
+  # join + survival columns
+  sample_col = "sample",
+  time_col   = "TimeSinceTreatmentStart",
+  tx_col     = "treatment_group",
+  surv_time_col = "diagsurvtime",
+  status_col    = "status",
+  meta_keep = c("Normalize_Candida", "CAlevel"),
+
+  # horizon / binning
+  horizon_years = 5,
+  include_none  = TRUE,     # fill NA as "None" before encoding
+  drop_none_cols = TRUE,    # drop features ending in "_None"
+
+  # PCA / UMAP / clustering
+  seed = 42,
+  n_pcs = 50,
+  umap_neighbors = 30,
+  umap_min_dist  = 0.3,
+  k_range = 3:20,
+  kmeans_nstart = 50
+){
+  suppressPackageStartupMessages({
+    library(dplyr)
+    library(tidyr)
+    library(stringr)
+    library(tibble)
+  })
+
+  # ---- 0) Basic checks ----
+  stopifnot(all(c(sample_col, time_col, tx_col) %in% names(timeline_long_norm)))
+  stopifnot(sample_col %in% names(NSCLC_metadata))
+  stopifnot(all(c(surv_time_col, status_col) %in% names(NSCLC_metadata)))
+
+  # ---- 1) Month bin matrix (Month_000, Month_001, ...) ----
+  # round to month index exactly like your code
+  dat <- timeline_long_norm %>%
+    transmute(
+      sample = .data[[sample_col]],
+      TimeSinceTreatmentStart = as.numeric(.data[[time_col]]),
+      treatment_group = as.character(.data[[tx_col]])
+    ) %>%
+    filter(!is.na(sample), !is.na(TimeSinceTreatmentStart), !is.na(treatment_group)) %>%
+    mutate(
+      month_idx = round(TimeSinceTreatmentStart * 12),
+      TimeBin = sprintf("Month_%03d", month_idx)
+    ) %>%
+    filter(month_idx >= 0, month_idx <= horizon_years * 12)
+
+  treatment_matrix <- dat %>%
+    group_by(sample, TimeBin) %>%
+    summarise(
+      Treatment = paste(sort(unique(treatment_group)), collapse = "+"),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from  = TimeBin,
+      values_from = Treatment,
+      values_fill = NA
+    )
+
+  # order month columns numerically
+  month_cols <- setdiff(names(treatment_matrix), "sample")
+  month_numbers <- as.numeric(str_extract(month_cols, "\\d+"))
+  ordered_months <- month_cols[order(month_numbers)]
+  treatment_matrix_ordered <- treatment_matrix[, c("sample", ordered_months), drop = FALSE]
+
+  # ---- 2) Limit to horizon months: 0..(horizon_years*12) inclusive (65 cols when 5y) ----
+  n_months <- horizon_years * 12
+  keep_months <- sprintf("Month_%03d", 0:n_months)
+  keep_cols <- intersect(keep_months, names(treatment_matrix_ordered))
+  treatment_short <- treatment_matrix_ordered %>%
+    select(sample, all_of(keep_cols)) %>%
+    pivot_longer(cols = -sample, names_to = "Month", values_to = "Treatment")
+
+  if (include_none) {
+    treatment_short <- treatment_short %>%
+      mutate(Treatment = replace_na(Treatment, "None"))
+  }
+
+  # ---- 3) One-hot encode Month_Treatment ----
+  treatment_encoded <- treatment_short %>%
+    mutate(
+      Feature = paste(Month, Treatment, sep = "_"),
+      Value = 1L
+    ) %>%
+    select(sample, Feature, Value) %>%
+    distinct() %>%  # avoid duplicate 1s
+    pivot_wider(names_from = Feature, values_from = Value, values_fill = list(Value = 0L))
+
+  if (drop_none_cols) {
+    none_cols <- grep("_None$", names(treatment_encoded), value = TRUE)
+    treatment_encoded <- treatment_encoded %>% select(-all_of(none_cols))
+  }
+
+  # matrix for PCA/UMAP
+  X <- treatment_encoded %>%
+    column_to_rownames("sample") %>%
+    as.matrix()
+
+  sl_ids <- rownames(X)
+  if (length(sl_ids) < 3) stop("Too few samples after encoding to cluster.")
+
+  # ---- 4) PCA ----
+  set.seed(seed)
+  pca_result <- prcomp(X, scale. = TRUE)
+  n_take <- min(n_pcs, ncol(pca_result$x))
+  pca_matrix <- pca_result$x[, 1:n_take, drop = FALSE]
+  rownames(pca_matrix) <- sl_ids
+
+  # ---- 5) UMAP ----
+  if (!requireNamespace("umap", quietly = TRUE)) {
+    stop("Package 'umap' not installed. Install with install.packages('umap').")
+  }
+  set.seed(seed)
+  umap_result <- umap::umap(pca_matrix, n_neighbors = umap_neighbors, min_dist = umap_min_dist)
+
+  umap_df <- as.data.frame(umap_result$layout)
+  colnames(umap_df) <- c("UMAP1", "UMAP2")
+  umap_df$sample <- sl_ids
+
+  # ---- 6) kmeans for k_range ----
+  cluster_results <- data.frame(sample = sl_ids, stringsAsFactors = FALSE)
+  for (k in k_range) {
+    set.seed(seed)
+    km <- kmeans(umap_df[, c("UMAP1", "UMAP2")], centers = k, nstart = kmeans_nstart)
+    cluster_results[[paste0("Cluster_k", k)]] <- km$cluster
+  }
+
+  # ---- 7) Merge with survival/meta ----
+  keep_meta <- intersect(meta_keep, names(NSCLC_metadata))
+  Surv_data <- NSCLC_metadata %>%
+    filter(.data[[sample_col]] %in% cluster_results$sample) %>%
+    select(
+      sample = all_of(sample_col),
+      diagsurvtime = all_of(surv_time_col),
+      status = all_of(status_col),
+      all_of(keep_meta)
+    )
+
+  Cluster_surv <- cluster_results %>%
+    left_join(Surv_data, by = "sample") %>%
+    drop_na() %>%
+    distinct()
+
+  list(
+    Cluster_surv = Cluster_surv,
+    cluster_results = cluster_results,
+    umap_df = umap_df,
+    X = X,
+    treatment_matrix_ordered = treatment_matrix_ordered,
+    treatment_encoded = treatment_encoded
+  )
+}
+
+
+res_clust <- tx_cluster_surv(
+  NSCLC_metadata = NSCLC_metadata,
+  timeline_long_norm = Normalized_timeline,
+  horizon_years = 5
+)
+
+Cluster_surv <- res_clust$Cluster_surv
+
+write_csv(Cluster_surv,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Cluster_survival_NSCLC.csv")
+
+```

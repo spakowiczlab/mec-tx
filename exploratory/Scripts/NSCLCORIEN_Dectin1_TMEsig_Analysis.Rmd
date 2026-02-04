@@ -246,7 +246,7 @@ ggplot(plot_df, aes(x = CAlevel, y = Score, fill=CAlevel )) +
   stat_compare_means(
     method = "wilcox.test",
     label = "p.format",
-    size = 6,
+    size = 3,
     label.x.npc = 0.4,   # horizontal center (0 = left, 1 = right)
     label.y.npc = 1   # vertical center   (0 = bottom, 1 = top)
   ) +
@@ -254,15 +254,16 @@ ggplot(plot_df, aes(x = CAlevel, y = Score, fill=CAlevel )) +
   theme_bw(base_size = 12) +
   labs(title = "Signature Scores by Candida Level",
        x = "Candida Level", y = "Signature Score") +
-  theme(strip.text = element_text(face = "bold", size = 10),
-        axis.text.x = element_text(angle = 45,face = "bold", hjust = 1,size = 20),
-        axis.text.y = element_text(face = "bold",size = 14),
-        axis.title.x = element_text(face = "bold",size = 24),
-        axis.title.y = element_text(face = "bold",size = 24),
-        title = element_text(face = "bold",size = 24),
+  theme(strip.text = element_text(face = "bold", size = 9),
+        axis.text.x = element_text(angle = 45,face = "bold", hjust = 1,size = 9),
+        axis.text.y = element_text(face = "bold",size = 9),
+        axis.title.x = element_text(face = "bold",size = 9),
+        axis.title.y = element_text(face = "bold",size = 9),
+        title = element_text(face = "bold",size = 9),
         legend.position = "none")
 
 
-ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Hypoxia_signature_NSCLC.svg", width = 6, height = 6)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Hypoxia_signature_NSCLC.png", width = 3, height = 3)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Hypoxia_signature_NSCLC.svg", width = 3, height = 3)
 
 ```

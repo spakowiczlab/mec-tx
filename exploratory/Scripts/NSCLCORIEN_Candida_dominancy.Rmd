@@ -150,7 +150,7 @@ res_sorted$delabel <- ifelse(res_sorted$log2FoldChange %in% top_genera$log2FoldC
 ggplot(data = res_sorted, aes(x = log2FoldChange, y = -log10(padj), col = Abundance, label = delabel)) +
   
   # Add vertical and horizontal threshold lines
-  geom_vline(xintercept = c(-1, 1), col = "gray", linetype = 'dashed') +
+  geom_vline(xintercept = c(-0.8, 0.8), col = "gray", linetype = 'dashed') +
   geom_hline(yintercept = -log10(0.05), col = "gray", linetype = 'dashed') + 
   
   # Scatter plot of points with custom colors

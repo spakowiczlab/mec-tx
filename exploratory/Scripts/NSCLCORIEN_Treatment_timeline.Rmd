@@ -177,7 +177,7 @@ radiation_df <- Time_status %>%
 
 ## Combining the medication and radiation file
 
-df_combined <- bind_rows(df, radiation_df)
+df_combined <- bind_rows(df, radiation_df) %>% unique()
 
 
 write_rds(df_combined,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")

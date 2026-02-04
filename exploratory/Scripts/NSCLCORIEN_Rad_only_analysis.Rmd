@@ -215,4 +215,95 @@ ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Fores
        height = 4, width = 6.7)
 ```
 
+```{r}
+## Squamous vs Adreno carcinoma
 
+Radiation_data<- readRDS(file= "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") |>
+  filter(RadiationTherapyInd == "Yes") %>% unique()
+
+Radiation_data_Candida <- Radiation_data %>% select(sample,CAlevel,diagsurvtime,status,Candida, Histology) %>% unique()
+
+Radiation_data_Candida<- Radiation_data_Candida %>% mutate(CAlevel = ifelse(Candida < 1193, "Low","High")) %>%
+  mutate(CAlevel = factor(CAlevel, levels = c("Low", "High"))) %>%
+  filter(Histology %in% c("Squamous Cell Carcinoma", "Adenocarcinoma")) %>% droplevels()
+
+
+## For squamous cell carcinoma
+fit<- survfit(Surv(diagsurvtime, status)~CAlevel, data = Radiation_data_Candida %>% filter(Histology == "Squamous Cell Carcinoma"))
+fit$strata
+
+p<-ggsurvplot(fit,
+              data = Radiation_data_Candida %>% filter(Histology == "Squamous Cell Carcinoma"),
+              pval=T,
+              pval.coord = c(0.155, 0.2),
+              risk.table=T,
+              xlim = c(0, 10),
+              break.x.by = 1,
+              xlab="Time (years)",palette = 
+                c("#E7B800", "#2E9FDF"),# custom color palettes
+              conf.int = TRUE,
+              lwd=1.5,font.x = c(15, "bold"),
+              font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
+              font.legend = c(15),  # Two different colors for CI (light purple and light blue)
+              conf.int.alpha = 0.3,
+              legend.labs = c("Low Candida (n = 646)","High Candida (n = 185 )"),
+              ggtheme = theme_bw(),
+              legend.title = "Abundance   ")
+
+p$plot + 
+  labs(title = "Squamous NSCLC ORIEN") + 
+  theme(
+    legend.text = element_text(size = 9, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.position = c(0.62, .85),
+  )
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/AllRadiation_only_kmplot.png", height = 4, width = 5.9)
+
+cox_fit <- coxph(
+  Surv(diagsurvtime, status) ~ CAlevel + Histology,
+  data = Radiation_data_Candida
+)
+
+summary(cox_fit)
+
+## For Adrenocarcinoma
+
+fit<- survfit(Surv(diagsurvtime, status)~CAlevel, data = Radiation_data_Candida %>% filter(Histology == "Adenocarcinoma"))
+fit$strata
+
+p<-ggsurvplot(fit,
+              data = Radiation_data_Candida %>% filter(Histology == "Adenocarcinoma"),
+              pval=T,
+              pval.coord = c(0.155, 0.2),
+              risk.table=T,
+              xlim = c(0, 10),
+              break.x.by = 1,
+              xlab="Time (years)",palette = 
+                c("#E7B800", "#2E9FDF"),# custom color palettes
+              conf.int = TRUE,
+              lwd=1.5,font.x = c(15, "bold"),
+              font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
+              font.legend = c(15),  # Two different colors for CI (light purple and light blue)
+              conf.int.alpha = 0.3,
+              legend.labs = c("Low Candida (n = 646)","High Candida (n = 185 )"),
+              ggtheme = theme_bw(),
+              legend.title = "Abundance   ")
+
+p$plot + 
+  labs(title = "Squamous NSCLC ORIEN") + 
+  theme(
+    legend.text = element_text(size = 9, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.position = c(0.62, .85),
+  )
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/AllRadiation_only_kmplot.png", height = 4, width = 5.9)
+
+cox_fit <- coxph(
+  Surv(diagsurvtime, status) ~ CAlevel + Histology,
+  data = Radiation_data_Candida %>% filter(Histology == "Adenocarcinoma")
+)
+
+summary(cox_fit)
+```

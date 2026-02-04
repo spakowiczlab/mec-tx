@@ -1,0 +1,186 @@
+---
+title: "Data_Preparation_MecTX"
+author: "Dipankor Dhrubo"
+date: "2025-12-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(umap)
+library(survival)
+library(survminer)
+library(factoextra)
+library(scales)
+library(patchwork)
+library(forcats)
+```
+
+
+```{r}
+# Loading the metadata
+
+NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+
+# A more fine tuning to make sure we are only using those samples that are directly coming from the lung tumor specimen
+
+Specimen<- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_ClinicalMolLinkage_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_ClinicalMolLinkage_V4.csv")) %>%
+  select(RNASeq,SpecimenSiteOfCollection) %>% filter(RNASeq %in% NSCLC_metadata$sample)
+
+## Selecting Only lung specific samples
+
+lung_keywords <- c("lung", "Lung", "bronchus", "Bronchus", "trachea", "Trachea")
+
+# Keep rows where Specimen_site contains any of the lung-related keywords
+lung_sites <- Specimen %>%
+  filter(grepl(paste(lung_keywords, collapse = "|"), SpecimenSiteOfCollection, ignore.case = TRUE)) %>% pull(RNASeq)
+
+NSCLC_metadata <- NSCLC_metadata %>% filter(sample %in% lung_sites) %>% unique()
+
+
+```
+
+```{r}
+
+#### Annotating drugs
+
+Medication<- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Medications_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Medications_V4.csv")) %>%
+  select(AvatarKey,Medication,MedLineRegimen,AgeAtMedStart,AgeAtMedStop) %>% filter(AvatarKey %in% NSCLC_metadata$AvatarKey)
+
+Drug_annotation<- readxl::read_xlsx("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/ORIEN_Medication_List_v2_20240503.xlsx") %>%
+  select(-1)
+
+
+drug_map <- Drug_annotation %>%
+  mutate(treatment_group = case_when(
+    Immunotherapy == "yes" ~ "IO",
+    Chemotherapy == "yes" ~ "Chemo",
+    `Small Molecule` == "yes" ~ "Small_Molecule",
+    `Hormone Therapy` == "yes" ~ "Hormone",
+    Targeted == "yes" ~ "Targeted",
+    Ancillary == "yes" ~ "Ancillary",
+    `Radioactive Isotope` == "yes" ~ "Radio_Iso",
+    Oncologic == "yes" ~ "Onco_drug",
+    TRUE ~ "Other"
+  )) %>%
+  select(Medication, treatment_group) %>%
+  dplyr::rename(drug_name = Medication)
+
+colnames(drug_map)[1]<- "Medication"
+
+```
+
+
+```{r}
+
+### Incorporating Age at diagnosis
+
+Diagnosis <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Diagnosis_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv")) %>% 
+  filter(AvatarKey %in% NSCLC_metadata$AvatarKey) %>% select(AvatarKey,AgeAtDiagnosis) %>% 
+  filter(! AgeAtDiagnosis == "Unknown/Not Applicable") %>%
+  filter(! AgeAtDiagnosis == "Age Unknown/Not Recorded") %>%
+  mutate(AgeAtDiagnosis = ifelse(grepl("Age 90 or older", AgeAtDiagnosis), "90", AgeAtDiagnosis))
+
+### Taking the latest diagnostic time
+
+Diagnosis <- Diagnosis %>%
+  group_by(AvatarKey) %>%
+  arrange(AgeAtDiagnosis) %>%  # Ensure it's sorted by age
+  slice_max(order_by = AgeAtDiagnosis, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
+  ungroup()
+
+### Incorporating Radiation Start and end time 
+Radiation <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Radiation_V4.csv"),
+                          read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01//20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Radiation_V4.csv")) %>% 
+  filter(AvatarKey %in% NSCLC_metadata$AvatarKey) %>% select(AvatarKey, AgeAtRadiationStart,AgeAtRadiationStop) %>% mutate(AgeAtRadiationStart = as.numeric(AgeAtRadiationStart),
+       AgeAtRadiationStop = as.numeric(AgeAtRadiationStop)) %>%
+  group_by(AvatarKey) %>%
+  arrange(AgeAtRadiationStart) %>%  # Ensure it's sorted by age
+  slice_max(order_by = AgeAtRadiationStart, n = 1, with_ties = FALSE) %>%  # Keep the first diagnosis
+  ungroup()
+
+
+Time_status<- NSCLC_metadata %>% left_join(Diagnosis, by="AvatarKey") %>%
+  left_join(Radiation, by="AvatarKey") %>%
+  select(sample, 
+         AvatarKey,
+         diagsurvtime,
+         status, 
+         AgeAtDiagnosis, 
+         RadiationTherapyInd,
+         AgeAtRadiationStart, 
+         AgeAtRadiationStop)
+
+
+###  Some joining of files to make proper medication file.
+
+med_annotated <- Medication %>%
+  left_join(drug_map, by = "Medication")
+
+med_annotated<- Time_status %>% left_join(med_annotated,by="AvatarKey")
+
+med_annotated<- med_annotated %>% select(sample, AvatarKey,AgeAtDiagnosis,
+                                         diagsurvtime,status, Medication,
+                                         treatment_group,AgeAtMedStart, 
+                                         AgeAtMedStop, RadiationTherapyInd,
+                                         AgeAtRadiationStart, 
+                                         AgeAtRadiationStop)
+
+med_annotated<- med_annotated %>% mutate(
+  AgeAtMedStart = as.numeric(AgeAtMedStart),
+  AgeAtMedStop = as.numeric(AgeAtMedStop)
+)
+
+
+### more fine tuning the meidcation file
+
+df <- med_annotated %>%
+  # Clean up: drop NA start dates and standardize
+  filter(!is.na(AgeAtMedStart), !is.na(AgeAtMedStop)) %>%
+  
+  # Apply truncation logic
+  mutate(AgeAtDiagnosis= as.numeric(AgeAtDiagnosis),
+    AgeAtTreatmentStart.mod = if_else(
+    AgeAtDiagnosis > AgeAtMedStart,
+    AgeAtDiagnosis,
+    AgeAtMedStart
+  )) %>%
+  
+  # Remove invalid treatments (where end is before start)
+  filter(AgeAtMedStop > AgeAtTreatmentStart.mod) %>%
+  select(-AgeAtRadiationStart,-AgeAtRadiationStop,-RadiationTherapyInd)
+
+
+# Step 1: Build radiation_df with only the valid radiation entries
+radiation_df <- Time_status %>%
+  filter(RadiationTherapyInd == "Yes") %>%
+  transmute(
+    sample = sample,
+    AvatarKey = AvatarKey,
+    AgeAtDiagnosis = as.numeric(AgeAtDiagnosis),
+    diagsurvtime = diagsurvtime,
+    status = status,
+    Medication = "Radiation",
+    treatment_group = "Radiation",
+    AgeAtMedStart = as.numeric(AgeAtRadiationStart),
+    AgeAtMedStop = as.numeric(AgeAtRadiationStop)
+  ) %>%
+  mutate(
+    AgeAtTreatmentStart.mod = if_else(AgeAtDiagnosis > AgeAtMedStart,
+                                      AgeAtDiagnosis,
+                                      AgeAtMedStart)
+  ) %>%
+  filter(AgeAtMedStop > AgeAtTreatmentStart.mod)
+
+## Combining the medication and radiation file
+
+Modified_medication <- bind_rows(df, radiation_df) %>% unique()
+
+
+write_rds(Modified_medication,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")
+
+```

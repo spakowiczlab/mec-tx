@@ -1,0 +1,814 @@
+---
+title: "Carbones Concern"
+author: "Dipankor Dhrubo"
+date: "2025-12-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(umap)
+library(survival)
+library(survminer)
+library(factoextra)
+library(scales)
+library(patchwork)
+library(tableone)
+
+```
+
+
+```{r}
+NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+
+timeline_long_norm<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLCORIEN_Treatment_simplified_longformat_data.csv") %>% select(sample) %>% unique()
+
+all_scores<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/tmesig_NSCLC.csv") %>% select(sample,buffa.score)
+
+Histology_hypoxia<- NSCLC_metadata %>% select(sample, Histology, CAlevel) %>% left_join(all_scores, by="sample") %>% drop_na() %>% filter(sample %in% timeline_long_norm$sample)
+Histology_hypoxia<- Histology_hypoxia %>% mutate(Histology = factor(Histology),
+                                                 CAlevel = factor(CAlevel))
+
+
+## Squamous Cell Carcinoma vs AdrenoCarcinoma
+
+## High candida proportion 
+
+ggplot(Histology_hypoxia, aes(x = Histology, fill = CAlevel)) +
+  geom_bar(position = "fill") +
+  ylab("Proportion") +
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(face = "bold", size = 7),
+    axis.text.y = element_text(face = "bold", size = 9),
+    axis.title.x = element_text(face = "bold", size = 9),
+    axis.title.y = element_text(face = "bold", size = 9)
+  )
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous_vs_adreno.png",width = 5, height = 2, dpi = 300)
+
+
+
+```
+
+
+```{r}
+
+
+
+## High candida proportion 
+
+ggplot(
+  Histology_hypoxia,
+  aes(x = CAlevel, y = buffa.score, fill = CAlevel)
+) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+  facet_wrap(~ Histology) +
+  stat_compare_means(
+    method = "wilcox.test",
+    label = "p.format"
+  ) +
+  ylab("Buffa Hypoxia Score") +
+  theme_bw() +
+  theme(
+    axis.text.x  = element_text(face = "bold", size = 7),
+    axis.text.y  = element_text(face = "bold", size = 9),
+    axis.title.x = element_text(face = "bold", size = 9),
+    axis.title.y = element_text(face = "bold", size = 9),
+    strip.text   = element_text(face = "bold", size = 9),
+    legend.position = "none"
+  )
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous_vs_adreno_hypoxia.svg", width = 5, height = 3, dpi = 300)
+
+
+m1 <- lm(
+  buffa.score ~ CAlevel * Histology,
+  data = Histology_hypoxia
+)
+summary(m1)
+
+
+
+```
+
+
+
+```{r}
+
+## Histology Survival
+
+Histology_survival<- NSCLC_metadata %>% select(sample, Histology, CAlevel,status,diagsurvtime) %>% left_join(all_scores, by="sample") %>% drop_na() %>% filter(!Histology %in% c("Unknown","Other")) %>% filter(sample %in% timeline_long_norm$sample)
+
+
+
+make_km <- function(h) {
+
+  df_h <- Histology_survival %>%
+    filter(Histology == h)
+
+  fit_h <- survfit(
+    Surv(diagsurvtime, status) ~ CAlevel,
+    data = df_h
+  )
+
+  ggsurvplot(
+    fit_h,
+    data       = df_h,
+    pval       = TRUE,
+    risk.table = TRUE,
+    conf.int   = FALSE,
+    legend.labs  = c("Low", "High"),
+    legend.title = "Candida (CAlevel)",
+    title      = h,
+
+    # 👇 KEY PART
+    xlim       = c(0, 5),          # restrict to 5 years
+    break.time.by = 1              # 1-year intervals
+  )
+}
+
+
+
+p_adeno <- make_km("Adenocarcinoma")
+
+p_adeno$plot <- p_adeno$plot +
+  theme(
+    plot.title   = element_text(size = 9, face = "bold"),
+    axis.title   = element_text(size = 7, face = "bold"),
+    axis.text    = element_text(size = 9, face = "bold"),
+    legend.title = element_text(size = 9, face = "bold"),
+    legend.text  = element_text(size = 9, face = "bold"),
+    axis.text.x = element_text(size = 9, face = "bold"),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+
+
+
+p_squam <- make_km("Squamous Cell Carcinoma")
+
+p_squam$plot <- p_squam$plot +
+  theme(
+    plot.title   = element_text(size = 9, face = "bold"),
+    axis.title   = element_text(size = 7, face = "bold"),
+    axis.text    = element_text(size = 9, face = "bold"),
+    legend.title = element_text(size = 9, face = "bold"),
+    legend.text  = element_text(size = 9, face = "bold"),
+    axis.text.x = element_text(size = 9, face = "bold"),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+
+ggarrange(
+  p_adeno$plot,
+  p_squam$plot,
+  ncol = 2
+)
+
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous_vs_adreno_survival.svg", width = 7, height = 3, dpi = 300)
+
+```
+
+
+```{r}
+
+NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+Refined_timeline<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Refined_intervals.csv")
+
+
+segs <- Refined_timeline %>%
+  left_join(
+    NSCLC_metadata %>% select(sample, Stage, Histology,Age, Primary_Met,Sex, BMI, status_f,diagsurvtime,SmokingStatus,CAlevel),
+    by = "sample"
+  ) %>% filter(!Stage == "Unknown") %>% unique()
+
+segs<- segs %>% filter(!is.na(Histology))
+
+tx_cols <- c(
+  Radiation      = "#8B6BB7",
+  Chemo          = "#F28E2B",
+  IO             = "#59A14F",
+  Hormone        = "#E15759",
+  Targeted       = "#4E79A7",
+  Small_Molecule = "#76B7B2",
+  Ancillary      = "#E1BE6A",  # mustard
+  Others         = "#7E6148",  # brown
+  None           = "#C0C0C0"   # neutral light gray
+)
+prep_segs <- function(segs, horizon_years = 5, catch_all = "Others") {
+  segs %>%
+    mutate(type_raw = as.character(type)) %>%
+    mutate(
+      type = case_when(
+        str_detect(type_raw, regex("radiation|\\brt\\b|xrt|imrt|sbrt|radiother", TRUE)) ~ "Radiation",
+        str_detect(type_raw, regex("\\bio\\b|immuno|pembro|nivol|atezo|ipi|pd-1|pd-l1|ctla", TRUE)) ~ "IO",
+        str_detect(type_raw, regex("chemo|chemotherapy|platin|taxel|5fu|gemcitabine|doxo", TRUE)) ~ "Chemo",
+        str_detect(type_raw, regex("hormone|endocrine|androgen|estrogen|tamox|abiraterone|enzalu|aromatase|letro|anastro|fulves", TRUE)) ~ "Hormone",
+        str_detect(type_raw, regex("target|tki|inhibitor|egfr|alk|braf|mek|parp|her2|trast", TRUE)) ~ "Targeted",
+        str_detect(type_raw, regex("small[ _-]?molecule|onco.?drug|oncodrug", TRUE)) ~ "Small_Molecule",
+        str_detect(type_raw, regex("ancillary|support|palliat", TRUE)) ~ "Ancillary",
+        TRUE ~ catch_all
+      ),
+      t0 = pmax(0, pmin(start_year, horizon_years)),
+      t1 = pmax(0, pmin(end_year,   horizon_years))
+    ) %>%
+    filter(!is.na(sample), t1 > t0)
+}
+
+# ---- compute row order for ALL patients ----
+dominant_order <- function(segs_clip, treatment_order) {
+  per_type <- segs_clip %>%
+    group_by(sample, type) %>%
+    summarise(dur = sum(t1 - t0), .groups = "drop")
+  
+  totals <- per_type %>%
+    group_by(sample) %>%
+    summarise(total = sum(dur), .groups = "drop")
+  
+  # dominant type + share
+  dom <- per_type %>%
+    group_by(sample) %>%
+    slice_max(dur, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    left_join(totals, by = "sample") %>%
+    transmute(sample,
+              dom_type  = type,
+              dom_share = if_else(total > 0, dur / total, 0))
+  
+  # earliest start for dominant type
+  earliest_dom <- segs_clip %>%
+    group_by(sample, type) %>%
+    summarise(earliest = min(t0), .groups = "drop") %>%
+    inner_join(dom, by = c("sample", "type" = "dom_type"))
+  
+  dom %>%
+    left_join(earliest_dom %>% select(sample, earliest), by = "sample") %>%
+    mutate(
+      dom_type = fct_relevel(
+  factor(dom_type),
+  intersect(treatment_order, levels(factor(dom_type)))),
+      ord1 = as.integer(dom_type),
+      ord2 = -dom_share,
+      ord3 = earliest
+    ) %>%
+    arrange(ord1, ord2, ord3) %>%
+    transmute(
+      sample,
+      sample_factor = factor(sample, levels = rev(sample)),  # top row = first
+      dom_type = fct_drop(dom_type),
+      dom_share,
+      earliest
+    )
+}
+
+plot_all_timeline <- function(
+  segs,
+  horizon_years = 5,
+  facet_var = "Stage",   # 👈 NEW
+  treatment_order = c("Radiation","Chemo","IO","Hormone",
+                      "Targeted","Small_Molecule","Ancillary","Others","None"),
+  catch_all = "Other",
+  line_width = 0.9,
+  base_size = 16,
+  title_size = 22,
+  axis_title_size = 14,
+  axis_text_size = 12,
+  legend_title_size = 14,
+  legend_text_size = 12,
+  bold = TRUE
+) {
+
+  segs_clip <- prep_segs(segs, horizon_years = horizon_years, catch_all = catch_all)
+
+  # keep only existing treatment types
+  present_types   <- sort(unique(segs_clip$type))
+  treatment_order <- intersect(treatment_order, present_types)
+
+  # ⬇️ compute ordering *within each facet*
+  plot_df <- segs_clip %>%
+    dplyr::group_by(.data[[facet_var]]) %>%
+    dplyr::group_modify(~ {
+      ord <- dominant_order(.x, treatment_order)
+      .x %>%
+        dplyr::inner_join(
+          ord %>% dplyr::select(sample, sample_factor),
+          by = "sample"
+        )
+    }) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(type = factor(type, levels = treatment_order))
+
+  pal <- tx_cols[treatment_order]
+
+  ggplot(plot_df) +
+    geom_segment(
+      aes(x = t0, xend = t1,
+          y = sample_factor, yend = sample_factor,
+          colour = type),
+      linewidth = line_width, lineend = "butt"
+    ) +
+    scale_color_manual(
+      values = pal,
+      breaks = treatment_order,
+      limits = treatment_order,
+      drop = FALSE,
+      name = "Treatment Type"
+    ) +
+    scale_x_continuous(
+      limits = c(0, horizon_years),
+      breaks = 0:horizon_years,
+      expand = expansion(mult = c(0.01, 0.01))
+    ) +
+    facet_wrap(
+      as.formula(paste("~", facet_var)),
+      scales = "free_y"
+    ) +
+    labs(
+      title = "Treatment Timeline — Ordered by types",
+      x = "Time Since First Treatment (years)",
+      y = "Patient"
+    ) +
+    theme_bw(base_size = base_size) +
+    theme(
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor   = element_blank(),
+      legend.position    = "right",
+      axis.text.y        = element_blank(),
+      axis.ticks.y       = element_blank(),
+      text          = element_text(face = if (bold) "bold" else "plain"),
+      plot.title    = element_text(size = title_size, hjust = 0.5),
+      axis.title    = element_text(size = axis_title_size),
+      axis.text     = element_text(size = axis_text_size),
+      legend.title  = element_text(size = legend_title_size),
+      legend.text   = element_text(size = legend_text_size)
+    )
+}
+
+p <- plot_all_timeline(
+  segs,
+  horizon_years = 5,
+  facet_var = "Stage"
+)
+
+print(p)
+
+ggsave(
+  filename = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/treatment_timeline_by_stage.png",
+  plot     = p,
+  width    = 14,      # inches (adjust if many stages)
+  height   = 8,       # increase if facets are tall
+  dpi      = 300      # journal-quality
+)
+
+
+### Timeline plot for adreno carcinoma
+
+segs_adreno<- segs %>% filter(Histology == "Adenocarcinoma")
+
+
+p <- plot_all_timeline(
+  segs_adreno,
+  horizon_years = 5,
+  facet_var = "Stage"
+)
+
+ggsave(
+  filename = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/treatment_timeline_by_stage_Adreno.png",
+  plot     = p,
+  width    = 14,      # inches (adjust if many stages)
+  height   = 8,       # increase if facets are tall
+  dpi      = 300      # journal-quality
+)
+
+### Timeline plot for adreno carcinoma
+
+segs_Squa<- segs %>% filter(Histology == "Squamous Cell Carcinoma")
+
+
+p <- plot_all_timeline(
+  segs_Squa,
+  horizon_years = 5,
+  facet_var = "Stage"
+)
+
+ggsave(
+  filename = "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/treatment_timeline_by_stage_Squam.png",
+  plot     = p,
+  width    = 14,      # inches (adjust if many stages)
+  height   = 8,       # increase if facets are tall
+  dpi      = 300      # journal-quality
+)
+
+```
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+
+meta1 <- NSCLC_metadata %>%
+  select(sample, Stage, Histology, Age, Primary_Met, Sex, BMI,
+         status_f, diagsurvtime, SmokingStatus, CAlevel) %>%
+  group_by(sample) %>%
+  summarise(
+    Stage        = dplyr::first(na.omit(Stage)),
+    Histology    = dplyr::first(na.omit(Histology)),
+    Age          = dplyr::first(na.omit(Age)),
+    Primary_Met  = dplyr::first(na.omit(Primary_Met)),
+    Sex          = dplyr::first(na.omit(Sex)),
+    BMI          = dplyr::first(na.omit(BMI)),
+    status_f     = dplyr::first(na.omit(status_f)),
+    diagsurvtime = dplyr::first(na.omit(diagsurvtime)),
+    SmokingStatus= dplyr::first(na.omit(SmokingStatus)),
+    CAlevel      = dplyr::first(na.omit(CAlevel)),
+    .groups = "drop"
+  )
+
+has_concurrent_chemo_io <- function(df) {
+
+  df2 <- df %>%
+    dplyr::transmute(
+      type = as.character(type),
+      t0   = as.numeric(start_year),
+      t1   = as.numeric(end_year)
+    ) %>%
+    dplyr::mutate(t0 = pmin(t0, t1, na.rm = TRUE),   # safety if swapped
+                  t1 = pmax(t0, t1, na.rm = TRUE)) %>%
+    dplyr::filter(!is.na(t0), !is.na(t1))
+
+  chemo <- df2[df2$type == "Chemo", , drop = FALSE]
+  io    <- df2[df2$type == "IO",    , drop = FALSE]
+
+  if (nrow(chemo) == 0 || nrow(io) == 0) return(FALSE)
+
+  for (i in seq_len(nrow(chemo))) {
+    for (j in seq_len(nrow(io))) {
+      if (max(chemo$t0[i], io$t0[j]) < min(chemo$t1[i], io$t1[j])) return(TRUE)
+    }
+  }
+  FALSE
+}
+
+has_concurrent_chemo_radiation <- function(df) {
+
+  df2 <- df %>%
+    dplyr::transmute(
+      type = as.character(type),
+      t0   = as.numeric(start_year),
+      t1   = as.numeric(end_year)
+    ) %>%
+    dplyr::mutate(t0 = pmin(t0, t1, na.rm = TRUE),   # safety if swapped
+                  t1 = pmax(t0, t1, na.rm = TRUE)) %>%
+    dplyr::filter(!is.na(t0), !is.na(t1))
+
+  chemo <- df2[df2$type == "Chemo", , drop = FALSE]
+  rad    <- df2[df2$type == "Radiation",    , drop = FALSE]
+
+  if (nrow(chemo) == 0 || nrow(rad) == 0) return(FALSE)
+
+  for (i in seq_len(nrow(chemo))) {
+    for (j in seq_len(nrow(rad))) {
+      if (max(chemo$t0[i], rad$t0[j]) < min(chemo$t1[i], rad$t1[j])) return(TRUE)
+    }
+  }
+  FALSE
+}
+
+
+
+pt_tbl <- Refined_timeline %>%
+  left_join(meta1, by = "sample") %>%
+  filter(Stage != "Unknown") %>%
+  mutate(type = ifelse(is.na(type), "None", as.character(type))) %>%
+  group_by(sample) %>%
+  summarise(
+    Stage = first(Stage),
+    Histology = first(Histology),
+    Age = first(Age),
+    Sex = first(Sex),
+    BMI = first(BMI),
+    Primary_Met = first(Primary_Met),
+    status_f = first(status_f),
+    diagsurvtime = first(diagsurvtime),
+    SmokingStatus = first(SmokingStatus),
+    CAlevel = first(CAlevel),
+
+    ever_Chemo = any(type == "Chemo"), 
+    ever_IO = any(type == "IO"),  
+    ever_Rad = any(type == "Radiation"), 
+    ever_Target = any(type == "Targeted"), 
+    ever_SM = any(type == "Small_Molecule"), 
+    ever_Horm = any(type == "Hormone"), 
+    ever_Anc = any(type == "Ancillary"), 
+    ever_Other = any(type == "Other"), 
+    ever_Chemo_IO = any(type == "Chemo") & any(type == "IO"), 
+    ever_Chemo_Rad = any(type == "Chemo") & any(type == "Radiation"), 
+    concurrent_Chemo_IO = has_concurrent_chemo_io(cur_data()),
+    concurrent_Chemo_rad = has_concurrent_chemo_radiation (cur_data()),
+
+    .groups = "drop"
+  )
+
+
+pt_tbl$Histology<- factor(pt_tbl$Histology)
+
+library(tableone)
+
+listVars <- c("BMI","Age","Sex","Stage","Histology","Primary_Met",
+              "status_f","diagsurvtime","SmokingStatus","CAlevel",
+              "ever_Chemo","ever_IO","ever_Chemo_IO","concurrent_Chemo_IO","ever_Rad","ever_Chemo_Rad","concurrent_Chemo_rad","ever_Target","ever_SM",
+              "ever_Horm","ever_Anc","ever_Other")
+
+catVars <- c("Sex","Stage","Histology","Primary_Met","status_f",
+             "SmokingStatus","CAlevel",
+             "ever_Chemo","ever_IO","ever_Chemo_IO","concurrent_Chemo_IO","ever_Rad","ever_Chemo_Rad","concurrent_Chemo_rad","ever_Target","ever_SM",
+             "ever_Horm","ever_Anc","ever_Other")
+
+table1 <- CreateTableOne(vars = listVars,
+                         data = pt_tbl,
+                         factorVars = catVars,
+                         strata = "Stage")
+
+tbl1 <- print(
+  table1,
+  nonnormal = c("BMI","Age","diagsurvtime"),
+  quote = FALSE,
+  noSpaces = TRUE,
+  showAllLevels = TRUE
+)
+
+write.csv(tbl1, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Carbones_Concern_NSCLC_ORIEN.csv")
+
+
+
+```
+
+
+```{r}
+## Selecting samples for TCC
+
+Sample_TCC <- Refined_timeline %>%
+  left_join(
+    NSCLC_metadata %>% select(sample,Candida, Normalize_Candida, Stage, Histology,Age, Primary_Met,Sex, BMI, status_f,diagsurvtime,SmokingStatus,CAlevel),
+    by = "sample"
+  ) %>% filter(!Stage == "Unknown") %>% unique() %>% arrange(desc(Normalize_Candida))
+
+write_csv(Sample_TCC,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/TCC_Samples.csv")
+
+```
+
+```{r}
+## Splitting Adreno and squa
+
+pt_tbl_adreno <-  pt_tbl %>% filter(Histology == "Adenocarcinoma")
+pt_tbl_Squa <-  pt_tbl %>% filter(Histology == "Squamous Cell Carcinoma")
+
+table1_adreno <- CreateTableOne(vars = listVars,
+                         data = pt_tbl_adreno,
+                         factorVars = catVars,
+                         strata = "Stage")
+
+tbl1_adreno <- print(
+  table1_adreno,
+  nonnormal = c("BMI","Age","diagsurvtime"),
+  quote = FALSE,
+  noSpaces = TRUE,
+  showAllLevels = F
+)
+
+write.csv(tbl1_adreno, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Carbones_Concern_NSCLCAdreno_ORIEN.csv")
+
+table1_squa <- CreateTableOne(vars = listVars,
+                         data = pt_tbl_Squa,
+                         factorVars = catVars,
+                         strata = "Stage")
+
+tbl1_squo <- print(
+  table1_squa,
+  nonnormal = c("BMI","Age","diagsurvtime"),
+  quote = FALSE,
+  noSpaces = TRUE,
+  showAllLevels = F
+)
+
+write.csv(tbl1_squo, "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Carbones_Concern_NSCLCSqua_ORIEN.csv")
+
+```
+
+
+```{r}
+### Timiline work Adreno
+
+NSCLC_metadata <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% select(-Race) %>% 
+  filter(sample %in% pt_tbl_adreno$sample)
+
+Modified_medication_adreno <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds") %>% 
+  filter(sample %in% pt_tbl_adreno$sample)
+
+Normalized_timeline_adeno <- tx_normalize(
+  Modified_medication_adreno,
+  NSCLC_metadata = NSCLC_metadata
+)
+
+write_csv(Normalized_timeline_adeno,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Adenocarcinoma/Normalized_timeline.csv")
+
+Refined_timeline <- tx_intervals(Normalized_timeline_adeno,
+                                    id_col   = "sample",
+                                    time_col = "TimeSinceTreatmentStart",
+                                    type_col = "treatment_group")
+
+
+write_csv(Refined_timeline,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Adenocarcinoma/Refined_intervals.csv")
+
+res_clust <- tx_cluster_surv(
+  NSCLC_metadata = NSCLC_metadata,
+  timeline_long_norm = Normalized_timeline_adeno,
+  horizon_years = 5
+)
+
+Cluster_surv <- res_clust$Cluster_surv
+
+write_csv(Cluster_surv,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Adenocarcinoma/Cluster_survival_NSCLC.csv")
+
+```
+
+
+```{r}
+
+### Timiline work Adreno
+## Preparing the main file
+
+## Minor tweaking of the file
+
+full_df <- Normalized_timeline_adeno %>%
+  left_join(
+    NSCLC_metadata %>%
+      select(sample, Normalize_Candida, diagsurvtime, Sex, BMI, SmokingStatus, Histology),
+    by = "sample"
+  ) %>% unique()
+
+
+Cluster_surv_2<- Cluster_surv %>% left_join(full_df %>% select(sample,Stage,Sex,BMI,Histology) %>% unique(),by="sample")
+Cluster_surv_2<- Cluster_surv_2 %>% left_join(NSCLC_metadata %>% 
+                                                select(sample,Age,ProgRecurInd,SmokingStatus) %>% unique(), by= "sample")
+Cluster_surv_2 <- Cluster_surv_2 %>%
+  mutate(
+    SmokingStatus = case_when(
+      str_detect(tolower(SmokingStatus), "never") ~ "Never",
+      str_detect(tolower(SmokingStatus), "former|ever") ~ "Former",
+      str_detect(tolower(SmokingStatus), "current|active") ~ "Current",
+      TRUE ~ NA_character_
+    )
+  )
+
+Cluster_surv_2<- Cluster_surv_2 %>% mutate(Stage= ifelse(Stage %in% c("I","II"), "Early","Advanced"))
+
+dir.create("//users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/dt_timeline", showWarnings = FALSE)
+for (kc in k_cols) {
+  plot_timeline_for_k(
+    kc,
+    Cluster_normal_Surv = Cluster_surv_2,  # or Cluster_normal_Surv_2 if that’s your current object
+    segs = Refined_timeline,
+    out_file = file.path("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/dt_timeline", paste0("timelines_", kc, ".png")),
+    ncols   = 3,
+    x_years = 6
+  )
+}
+
+Demo <- tx_focus_dt(
+  Cluster_surv_2, Refined_timeline,
+  kc = "Cluster_k17", cl = 17,
+  focus_types  = c("Chemo"),
+  n_twins      = 25,
+  min_share_tx = 0.33,
+  start_filter = "all" ,
+  enforce_sequence = F,
+  sequence_strict = F
+  #cox_covars = c("Age","Sex","BMI","CAlevel")
+)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/demo_1.png", Demo, width = 40, height = 8, dpi = 300)
+
+
+```
+
+
+```{r}
+### Timiline work Squa
+
+NSCLC_metadata_squa <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% select(-Race) %>% 
+  filter(sample %in% pt_tbl_Squa$sample)
+
+Modified_medication_squa <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds") %>% 
+  filter(sample %in% pt_tbl_Squa$sample)
+
+NSCLC_timeline_squa <- tx_normalize(
+  Modified_medication_squa,
+  NSCLC_metadata = NSCLC_metadata_squa
+)
+
+write_csv(NSCLC_timeline_squa,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Squamous/Normalized_timeline.csv")
+
+Refined_timeline_squa <- tx_intervals(NSCLC_timeline_squa,
+                                    id_col   = "sample",
+                                    time_col = "TimeSinceTreatmentStart",
+                                    type_col = "treatment_group")
+
+
+write_csv(Refined_timeline_squa,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Adenocarcinoma/Refined_intervals.csv")
+
+res_clust <- tx_cluster_surv(
+  NSCLC_metadata = NSCLC_metadata_squa,
+  timeline_long_norm = NSCLC_timeline_squa,
+  horizon_years = 5
+)
+
+Cluster_surv_squa <- res_clust$Cluster_surv
+
+write_csv(Cluster_surv_squa,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Squamous/Cluster_survival_NSCLC.csv")
+
+```
+
+```{r}
+
+### Timiline work Squa
+## Preparing the main file
+
+## Minor tweaking of the file
+
+full_df <- NSCLC_timeline_squa %>%
+  left_join(
+    NSCLC_metadata_squa %>%
+      select(sample, Normalize_Candida, diagsurvtime, Sex, BMI, SmokingStatus, Histology),
+    by = "sample"
+  ) %>% unique()
+
+
+Cluster_surv_2_squa<- Cluster_surv_squa %>% left_join(full_df %>% select(sample,Stage,Sex,BMI,Histology) %>% unique(),by="sample")
+Cluster_surv_2_squa<- Cluster_surv_2_squa %>% left_join(NSCLC_metadata_squa %>% 
+                                                select(sample,Age,ProgRecurInd,SmokingStatus) %>% unique(), by= "sample")
+Cluster_surv_2_squa <- Cluster_surv_2_squa %>%
+  mutate(
+    SmokingStatus = case_when(
+      str_detect(tolower(SmokingStatus), "never") ~ "Never",
+      str_detect(tolower(SmokingStatus), "former|ever") ~ "Former",
+      str_detect(tolower(SmokingStatus), "current|active") ~ "Current",
+      TRUE ~ NA_character_
+    )
+  )
+
+Cluster_surv_2_squa<- Cluster_surv_2_squa %>% mutate(Stage= ifelse(Stage %in% c("I","II"), "Early","Advanced"))
+
+dir.create("//users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/dt_timeline", showWarnings = FALSE)
+
+
+k_cols <- paste0("Cluster_k", 3:20)
+
+
+# keep only those that actually exist in your data:
+k_cols <- intersect(k_cols, names(Cluster_surv_squa))
+
+for (kc in k_cols) {
+  plot_timeline_for_k(
+    kc,
+    Cluster_normal_Surv = Cluster_surv_2_squa,  # or Cluster_normal_Surv_2 if that’s your current object
+    segs = Refined_timeline_squa,
+    out_file = file.path("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/dt_timeline", paste0("timelines_", kc, ".png")),
+    ncols   = 3,
+    x_years = 6
+  )
+}
+
+Demo <- tx_focus_dt(
+  Cluster_surv_2, Refined_timeline,
+  kc = "Cluster_k15", cl = 11,
+  focus_types  = c("Radiation"),
+  n_twins      = 40,
+  min_share_tx = 0.33,
+  start_filter = "all" , #"all", "single_only", "combo_only"
+  enforce_sequence = F,
+  sequence_strict = F
+  #cox_covars = c("Age","Sex","BMI","CAlevel")
+)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/Radiation.png", Demo, width = 40, height = 8, dpi = 300)
+
+Demo <- tx_focus_dt(
+  Cluster_surv_2_squa, Refined_timeline_squa,
+  kc = "Cluster_k6", cl = 3,
+  focus_types  = c("Radiation"),
+  n_twins      = 20,
+  min_share_tx = 0.33,
+  start_filter = "all" , #"all", "single_only", "combo_only"
+  enforce_sequence = T,
+  sequence_strict = F,
+  cox_covars = c("Age","Sex","BMI","Stage","CAlevel")
+)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/Radiation.png", Demo, width = 40, height = 8, dpi = 300)
+
+
+```

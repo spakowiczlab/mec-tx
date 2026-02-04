@@ -1,0 +1,195 @@
+---
+title: "Tx_Normalization"
+author: "Dipankor Dhrubo"
+date: "2025-12-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(umap)
+library(survival)
+library(survminer)
+library(factoextra)
+library(scales)
+library(patchwork)
+library(forcats)
+```
+
+
+
+```{r}
+
+NSCLC_metadata <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% select(-Race)
+
+Modified_medication <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")
+
+
+### Function that normalize the timeline so that everything starts from 0.
+
+tx_normalize <- function(
+  Modified_medication,
+  NSCLC_metadata = NULL
+){
+  suppressPackageStartupMessages({
+    library(dplyr); library(tidyr)
+  })
+
+  # Add age_at_death_progression like your old code
+  Modified_medication <- Modified_medication %>%
+    mutate(age_at_death_progression = AgeAtDiagnosis + diagsurvtime)
+
+  # Clean and define mod start
+  df_clean <- Modified_medication %>%
+    filter(!is.na(AgeAtMedStart), !is.na(AgeAtMedStop)) %>%
+    mutate(AgeAtTreatmentStart.mod = if_else(
+      AgeAtDiagnosis > AgeAtMedStart, AgeAtDiagnosis, AgeAtMedStart
+    )) %>%
+    filter(AgeAtMedStop > AgeAtTreatmentStart.mod)
+
+  # Expand to monthly grid (faithful)
+  expanded_timeline <- df_clean %>%
+    rowwise() %>%
+    mutate(month_seq = list(seq(AgeAtTreatmentStart.mod, AgeAtMedStop, by = 1/12))) %>%
+    ungroup() %>%
+    unnest(month_seq) %>%
+    mutate(month_seq = round(month_seq, 3)) %>%
+    distinct(sample, treatment_group, month_seq)
+
+  timeline_long_monthly <- expanded_timeline %>%
+    rename(AgeMonth = month_seq) %>%
+    select(sample, AgeMonth, treatment_group)
+
+  # Normalize so first treatment month = 0
+  start_age_per_patient <- timeline_long_monthly %>%
+    group_by(sample) %>%
+    summarise(start_age = min(AgeMonth, na.rm = TRUE), .groups = "drop")
+
+  timeline_long_norm <- timeline_long_monthly %>%
+    left_join(start_age_per_patient, by = "sample") %>%
+    mutate(TimeSinceTreatmentStart = AgeMonth - start_age) %>%
+    mutate(TimeSinceTreatmentStart = round(TimeSinceTreatmentStart * 12) / 12)
+
+  # Join metadata (Stage/status)
+  if (!is.null(NSCLC_metadata)) {
+    timeline_long_norm <- timeline_long_norm %>%
+      left_join(NSCLC_metadata %>% select(sample, Stage, status), by = "sample")
+  }
+
+  # Join age_at_death_progression (faithful)
+  timeline_long_norm <- timeline_long_norm %>%
+    left_join(Modified_medication %>% select(sample, age_at_death_progression), by = "sample") %>%
+    distinct()
+
+  timeline_long_norm
+}
+
+
+
+Normalized_timeline <- tx_normalize(
+  Modified_medication,
+  NSCLC_metadata = NSCLC_metadata
+)
+
+write_csv(Normalized_timeline,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Normalized_timeline.csv")
+
+
+##### Function that provide a time interval for each medication per patients
+
+tx_intervals <- function(
+  df,
+  id_col   = "sample",
+  time_col = "TimeSinceTreatmentStart",
+  type_col = "treatment_group",
+  drop_types = c("None", NA),
+  horizon_years = 5
+){
+  suppressPackageStartupMessages({
+    library(dplyr)
+    library(stringr)
+    library(tidyr)
+  })
+
+  canon <- function(x){
+    x <- as.character(x)
+    case_when(
+      str_detect(x, regex("radiation|\\brt\\b|xrt|imrt|sbrt", TRUE)) ~ "Radiation",
+      str_detect(x, regex("\\bio\\b|immuno|pembro|nivol|atezo|ipi|pd", TRUE)) ~ "IO",
+      str_detect(x, regex("chemo|chemotherapy|platin|taxel|5fu|gem", TRUE)) ~ "Chemo",
+      str_detect(x, regex("target|tki|egfr|alk|braf|mek|parp", TRUE)) ~ "Targeted",
+      str_detect(x, regex("hormone|endocrine|tamox|abiraterone", TRUE)) ~ "Hormone",
+      str_detect(x, regex("small[ _-]?molecule|oncodrug", TRUE)) ~ "Small_Molecule",
+      str_detect(x, regex("ancillary|support|palliat", TRUE)) ~ "Ancillary",
+      TRUE ~ "Others"
+    )
+  }
+
+  # ---- 1) Clean + SNAP to month grid like your old pipeline ----
+  dat <- df %>%
+    transmute(
+      sample = .data[[id_col]],
+      t_year_raw = as.numeric(.data[[time_col]]),
+      type = canon(.data[[type_col]])
+    ) %>%
+    filter(!is.na(sample), !is.na(t_year_raw)) %>%
+    filter(!(type %in% drop_types)) %>%
+    mutate(
+      # snap to nearest month
+      t_year = round(t_year_raw * 12) / 12,
+      # month index (integer), consistent with snapped t_year
+      m = as.integer(round(t_year * 12)),
+      # clamp to horizon months
+      m = pmax(0L, pmin(m, as.integer(horizon_years * 12)))
+    )
+
+  if (!nrow(dat)) {
+    return(tibble::tibble(sample=character(), type=character(),
+                          block=integer(), start_year=double(), end_year=double()))
+  }
+
+  # ---- 2) Block defined ONLY by month continuity ----
+  month_blocks <- dat %>%
+    distinct(sample, m) %>%
+    arrange(sample, m) %>%
+    group_by(sample) %>%
+    mutate(
+      new_block = m != lag(m, default = first(m)) + 1L,
+      block = cumsum(replace_na(new_block, TRUE))
+    ) %>%
+    ungroup()
+
+  dat2 <- dat %>%
+    distinct(sample, m, type) %>%
+    left_join(month_blocks, by = c("sample","m")) %>%
+    arrange(sample, block, type, m)
+
+  # ---- 3) Merge consecutive months per type ----
+  segs <- dat2 %>%
+    group_by(sample, block, type) %>%
+    mutate(
+      new_run = m != lag(m, default = first(m)) + 1L,
+      run = cumsum(replace_na(new_run, TRUE))
+    ) %>%
+    group_by(sample, block, type, run) %>%
+    summarise(
+      start_year = min(m) / 12,
+      end_year   = (max(m) + 1L) / 12,  # end exclusive
+      .groups = "drop"
+    ) %>%
+    arrange(sample, block, start_year, type)
+
+  segs
+}
+
+
+
+Refined_timeline <- tx_intervals(Normalized_timeline,
+                                    id_col   = "sample",
+                                    time_col = "TimeSinceTreatmentStart",
+                                    type_col = "treatment_group")
+
+
+write_csv(Refined_timeline,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Refined_intervals.csv")
+
+```
