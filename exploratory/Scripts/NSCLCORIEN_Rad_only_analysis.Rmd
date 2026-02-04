@@ -216,7 +216,7 @@ ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Fores
 ```
 
 ```{r}
-## Squamous vs Adreno carcinoma
+## Squamous Cell Carcinoma
 
 Radiation_data<- readRDS(file= "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") |>
   filter(RadiationTherapyInd == "Yes") %>% unique()
@@ -246,7 +246,7 @@ p<-ggsurvplot(fit,
               font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
               font.legend = c(15),  # Two different colors for CI (light purple and light blue)
               conf.int.alpha = 0.3,
-              legend.labs = c("Low Candida (n = 646)","High Candida (n = 185 )"),
+              legend.labs = c("Low Candida (n = 155)","High Candida (n = 50 )"),
               ggtheme = theme_bw(),
               legend.title = "Abundance   ")
 
@@ -260,13 +260,73 @@ p$plot +
 
 ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/AllRadiation_only_kmplot.png", height = 4, width = 5.9)
 
-cox_fit <- coxph(
-  Surv(diagsurvtime, status) ~ CAlevel + Histology,
-  data = Radiation_data_Candida
-)
+### Cox_regression forest plot
 
-summary(cox_fit)
+df_Sq <- 
+  Radiation_data %>% filter(Histology == "Squamous Cell Carcinoma") %>%
+  filter(complete.cases(diagsurvtime, status, Age, BMI, CAlevel, Stage, Sex)) |> 
+  #filter(!Stage == "Unknown") |> 
+  #filter(!BMI == "Unknown/Not Applicable") |> 
+  #filter(!Sex == "Unknown") |> droplevels() %>%
+  mutate(stage = if_else(grepl("^I$|^II$", Stage),
+                         true = "Early", 
+                         false = "Advanced Disease"),
+         BMI = as.numeric(BMI)) |> 
+  mutate(stage = fct_relevel(stage, "Early"))
 
+fit.multi <- coxph(Surv(diagsurvtime, status) ~ CAlevel + Age + BMI + stage + Sex, 
+                    data = df_Sq)
+
+summary(fit.multi)
+
+
+# Forestplot Creation for Squamous carcinoma
+
+coxresults <- broom::tidy(fit.multi, exponentiate = TRUE, conf.int = TRUE)
+
+coxresults <- coxresults %>% filter(term != "SexUnknown") |>
+  mutate(term = forcats::fct_rev(term)) ## Making things in reverse order
+
+coxresults <- coxresults %>%
+  mutate(pval_label = sprintf("p = %.3f", p.value)) # Defining 
+
+
+coxresults_labeled <- coxresults %>%
+  mutate(term = as.character(term)) %>%
+  mutate(
+    term = str_replace(term, "^CAlevel", "Candida Abundance: "),
+    term = str_replace(term, "^stage",   "Stage: "),
+    term = str_replace(term, "^Sex",     "Sex: "),
+    term = str_replace(term, "^Age",     "Age: "),
+    term = str_replace(term, "^BMI",     "BMI: ")
+  ) %>%
+  mutate(term = factor(term))
+
+
+# Calculate a constant x-position to place all p-values
+x_position <- max(coxresults_labeled$conf.high, na.rm = TRUE) * 1.5
+
+# Create the forest plot
+ggplot(coxresults_labeled, aes(x = estimate, y = term)) +
+  geom_point(size = 1.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -.25, size = 3.5) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor", title = "ORIEN_SquamousNSCLC: Radiation Treated Patients") +
+  theme_bw()+theme(axis.text.x = element_text(face="bold", size=12),
+                   axis.text.y = element_text(face="bold", size=12),
+                   axis.title=element_text(size=10,face="bold"))
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/Forestplot_Radiationpatients_NSCLC.svg", 
+       height = 4, width = 7)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/Forestplot_Radiationpatients_NSCLC.png", 
+       height = 4, width = 6.7)
+
+```
+
+```{r}
 ## For Adrenocarcinoma
 
 fit<- survfit(Surv(diagsurvtime, status)~CAlevel, data = Radiation_data_Candida %>% filter(Histology == "Adenocarcinoma"))
@@ -286,12 +346,12 @@ p<-ggsurvplot(fit,
               font.y = c(15, "bold"),font.tickslab = c(12, "bold"),
               font.legend = c(15),  # Two different colors for CI (light purple and light blue)
               conf.int.alpha = 0.3,
-              legend.labs = c("Low Candida (n = 646)","High Candida (n = 185 )"),
+              legend.labs = c("Low Candida (n = 371)","High Candida (n = 101 )"),
               ggtheme = theme_bw(),
               legend.title = "Abundance   ")
 
 p$plot + 
-  labs(title = "Squamous NSCLC ORIEN") + 
+  labs(title = "Arenocarcinoma NSCLC ORIEN") + 
   theme(
     legend.text = element_text(size = 9, face = "bold"),
     legend.title = element_text(size = 10, face = "bold"),
@@ -300,10 +360,65 @@ p$plot +
 
 ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/AllRadiation_only_kmplot.png", height = 4, width = 5.9)
 
-cox_fit <- coxph(
-  Surv(diagsurvtime, status) ~ CAlevel + Histology,
-  data = Radiation_data_Candida %>% filter(Histology == "Adenocarcinoma")
-)
+df_Ad <- 
+  Radiation_data %>% filter(Histology == "Adenocarcinoma") %>%
+  filter(complete.cases(diagsurvtime, status, Age, BMI, CAlevel, Stage, Sex)) |> 
+  #filter(!Stage == "Unknown") |> 
+  #filter(!BMI == "Unknown/Not Applicable") |> 
+  #filter(!Sex == "Unknown") |> droplevels() %>%
+  mutate(stage = if_else(grepl("^I$|^II$", Stage),
+                         true = "Early", 
+                         false = "Advanced Disease"),
+         BMI = as.numeric(BMI)) |> 
+  mutate(stage = fct_relevel(stage, "Early"))
 
-summary(cox_fit)
+fit.multi <- coxph(Surv(diagsurvtime, status) ~ CAlevel + Age + BMI + stage + Sex, 
+                    data = df_Ad)
+
+summary(fit.multi)
+
+# Forestplot Creation for Squamous carcinoma
+
+coxresults <- broom::tidy(fit.multi, exponentiate = TRUE, conf.int = TRUE)
+
+coxresults <- coxresults %>% filter(term != "SexUnknown") |>
+  mutate(term = forcats::fct_rev(term)) ## Making things in reverse order
+
+coxresults <- coxresults %>%
+  mutate(pval_label = sprintf("p = %.3f", p.value)) # Defining 
+
+
+coxresults_labeled <- coxresults %>%
+  mutate(term = as.character(term)) %>%
+  mutate(
+    term = str_replace(term, "^CAlevel", "Candida Abundance: "),
+    term = str_replace(term, "^stage",   "Stage: "),
+    term = str_replace(term, "^Sex",     "Sex: "),
+    term = str_replace(term, "^Age",     "Age: "),
+    term = str_replace(term, "^BMI",     "BMI: ")
+  ) %>%
+  mutate(term = factor(term))
+
+
+# Calculate a constant x-position to place all p-values
+x_position <- max(coxresults_labeled$conf.high, na.rm = TRUE) * 1.5
+
+# Create the forest plot
+ggplot(coxresults_labeled, aes(x = estimate, y = term)) +
+  geom_point(size = 1.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_text(aes(x = x_position, label = pval_label), hjust = -.25, size = 3.5) +
+  scale_x_log10(expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = "Hazard Ratio (95% CI)", y = "Predictor", title = "ORIEN_AdrenoNSCLC: Radiation Treated Patients") +
+  theme_bw()+theme(axis.text.x = element_text(face="bold", size=12),
+                   axis.text.y = element_text(face="bold", size=12),
+                   axis.title=element_text(size=10,face="bold"))
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/Forestplot_Radiationpatients_NSCLC.svg", 
+       height = 4, width = 7)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/Forestplot_Radiationpatients_NSCLC.png", 
+       height = 4, width = 6.7)
+
 ```

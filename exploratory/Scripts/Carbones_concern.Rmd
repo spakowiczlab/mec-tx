@@ -784,23 +784,9 @@ for (kc in k_cols) {
 
 Demo <- tx_focus_dt(
   Cluster_surv_2, Refined_timeline,
-  kc = "Cluster_k15", cl = 11,
-  focus_types  = c("Radiation"),
-  n_twins      = 40,
-  min_share_tx = 0.33,
-  start_filter = "all" , #"all", "single_only", "combo_only"
-  enforce_sequence = F,
-  sequence_strict = F
-  #cox_covars = c("Age","Sex","BMI","CAlevel")
-)
-
-ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/Radiation.png", Demo, width = 40, height = 8, dpi = 300)
-
-Demo <- tx_focus_dt(
-  Cluster_surv_2_squa, Refined_timeline_squa,
-  kc = "Cluster_k6", cl = 3,
-  focus_types  = c("Radiation"),
-  n_twins      = 20,
+  kc = "Cluster_k8", cl = 8,
+  focus_types  = c("Chemo"),
+  n_twins      = 50,
   min_share_tx = 0.33,
   start_filter = "all" , #"all", "single_only", "combo_only"
   enforce_sequence = T,
@@ -808,7 +794,21 @@ Demo <- tx_focus_dt(
   cox_covars = c("Age","Sex","BMI","Stage","CAlevel")
 )
 
-ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/Radiation.png", Demo, width = 40, height = 8, dpi = 300)
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Adenocarcinoma/Chemo.png", Demo, width = 40, height = 8, dpi = 300)
+
+Demo <- tx_focus_dt(
+  Cluster_surv_2_squa, Refined_timeline_squa,
+  kc = "Cluster_k6", cl = 2,
+  focus_types  = c("Chemo"),
+  n_twins      = 40,
+  min_share_tx = 0.33,
+  start_filter = "all" , #"all", "single_only", "combo_only"
+  enforce_sequence = F,
+  sequence_strict = F,
+  cox_covars = c("Age","Sex","BMI","Stage","CAlevel")
+)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/Chemo.png", Demo, width = 40, height = 8, dpi = 300)
 
 
 ```
