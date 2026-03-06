@@ -1,0 +1,233 @@
+---
+title: "Timeline_Sensitivity_Test"
+author: "Dipankor Dhrubo"
+date: "2026-03-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+
+```
+
+
+```{r}
+#Step 1: Prepare the data
+
+Modified_medication <- Modified_medication %>%
+  filter(!(sample == "SL558547" & is.na(treatment_group)))
+
+Modified_medication %>%
+     count(treatment_group, sort = TRUE) %>%
+     print(n = 30)
+
+Modified_medication %>%
+     group_by(sample) %>%
+     summarise(all_na_type = all(is.na(treatment_group))) %>%
+     count(all_na_type)
+
+
+med_for_sensitivity <- Modified_medication %>%
+  rename(
+    start_year = AgeAtTreatmentStart.mod,
+    end_year   = AgeAtMedStop,
+    type       = treatment_group
+  ) %>%
+  mutate(
+    type = case_when(
+      Medication == "Paclitaxel (protein bound)" ~ "Chemo", # Match the drug name here
+      TRUE ~ type                                          # Keep other types as they are
+    )
+  )
+
+#Step 2: Check what treatment types exist
+
+table(med_for_sensitivity$type)
+
+```
+
+```{r}
+#Step 3: Define the window function
+
+has_concurrent_window <- function(df, type_a, type_b, window_years = 0) {
+  df2 <- df %>%
+    dplyr::transmute(
+      type = as.character(type),
+      t0   = as.numeric(start_year),
+      t1   = as.numeric(end_year)
+    ) %>%
+    dplyr::filter(
+      !is.na(type),                          # drop NA treatment types
+      !is.na(t0), !is.na(t1),
+      is.finite(t0), is.finite(t1)
+    ) %>%
+    dplyr::mutate(
+      t0 = pmin(t0, t1, na.rm = TRUE),
+      t1 = pmax(t0, t1, na.rm = TRUE)
+    )
+
+  a <- df2[df2$type == type_a, , drop = FALSE]
+  b <- df2[df2$type == type_b, , drop = FALSE]
+
+  if (nrow(a) == 0 || nrow(b) == 0) return(FALSE)
+
+  for (i in seq_len(nrow(a))) {
+    for (j in seq_len(nrow(b))) {
+      overlap <- max(a$t0[i], b$t0[j]) < min(a$t1[i], b$t1[j]) + window_years
+      if (!is.na(overlap) && overlap) return(TRUE)
+    }
+  }
+  FALSE
+}
+
+```
+
+```{r}
+
+#Step 4: Define the sensitivity sweep function
+
+sensitivity_concurrent <- function(data, type_a, type_b,
+                                   windows_weeks = c(0, 1, 2, 4, 6, 8)) {
+  windows_years <- windows_weeks / 52
+
+  purrr::map_dfr(windows_years, function(w) {
+    data %>%
+      dplyr::group_by(sample) %>%
+      dplyr::summarise(
+        concurrent = has_concurrent_window(
+          dplyr::cur_data(), type_a, type_b, window_years = w
+        ),
+        .groups = "drop"
+      ) %>%
+      dplyr::summarise(
+        window_weeks     = w * 52,
+        n_concurrent     = sum(concurrent),
+        n_not_concurrent = sum(!concurrent),
+        pct_concurrent   = round(mean(concurrent) * 100, 1)
+      )
+  })
+}
+
+```
+
+```{r}
+#Step 5: Run across all pairs
+
+pairs <- list(
+  c("Chemo", "IO"),
+  c("Chemo", "Radiation"),
+  c("IO",    "Radiation")
+)
+
+sensitivity_all <- purrr::map_dfr(pairs, function(p) {
+  sensitivity_concurrent(
+    med_for_sensitivity,
+    type_a = p[1],
+    type_b = p[2]
+  ) %>%
+    mutate(comparison = paste(p[1], "vs", p[2]), .before = 1)
+})
+
+print(sensitivity_all)
+
+```
+
+```{r}
+#Step 6: Plot
+
+ggplot(sensitivity_all, aes(x = window_weeks, y = pct_concurrent, color = comparison)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 4.3, linetype = "dashed", color = "gray50") +
+  annotate("text", x = 4.3, y = max(sensitivity_all$pct_concurrent),
+           label = "Monthly grid\n(~4.3 wks)", hjust = -0.1, size = 3, color = "gray50") +
+  labs(
+    x     = "Concurrency window (weeks)",
+    y     = "% patients classified as concurrent",
+    title = "LUSC: Sensitivity of concurrent treatment classification to time window",
+    color = "Comparison"
+  ) +
+  theme_bw()
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/LUSC_Sensitivity_result.png", width = 6, height = 4)
+
+```
+
+```{r}
+# ---- Concurrent pairs (window-sensitive) ----
+pairs <- list(
+  c("Chemo", "IO"),
+  c("Chemo", "Radiation"),
+  c("IO",    "Radiation"),
+  c("Chemo",  "Targeted")
+)
+
+sensitivity_all <- purrr::map_dfr(pairs, function(p) {
+  sensitivity_concurrent(
+    med_for_sensitivity,
+    type_a = p[1],
+    type_b = p[2]
+  ) %>%
+    mutate(comparison = paste(p[1], "vs", p[2]), .before = 1)
+})
+
+# ---- Single modality only (window-independent) ----
+single_modality <- med_for_sensitivity %>%
+  group_by(sample) %>%
+  summarise(
+    types_present = list(unique(type[!is.na(type)])),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    only_Chemo     = map_lgl(types_present, ~ length(.x) == 1 && "Chemo"     %in% .x),
+    only_IO        = map_lgl(types_present, ~ length(.x) == 1 && "IO"        %in% .x),
+    only_Radiation = map_lgl(types_present, ~ length(.x) == 1 && "Radiation" %in% .x),
+    only_Targeted  = map_lgl(types_present, ~ length(.x) == 1 &&
+                               any(.x %in% c("Targeted", "Small_Molecule")))
+  ) %>%
+  # calculate pct directly from logical columns — don't sum first
+  summarise(
+    n_total            = n(),
+    pct_only_Chemo     = round(mean(only_Chemo)     * 100, 1),
+    pct_only_IO        = round(mean(only_IO)         * 100, 1),
+    pct_only_Radiation = round(mean(only_Radiation)  * 100, 1),
+    pct_only_Targeted  = round(mean(only_Targeted)   * 100, 1)
+  )
+
+print(single_modality)
+
+# At window = 0 (exact overlap), combine both summaries into one bar chart
+concurrent_at_zero <- sensitivity_all %>%
+  filter(window_weeks == 2) %>%
+  select(comparison, pct_concurrent) %>%
+  rename(category = comparison, pct = pct_concurrent) %>%
+  mutate(type = "Concurrent")
+
+single_mod_long <- single_modality %>%
+  select(starts_with("pct_only")) %>%
+  pivot_longer(everything(), 
+               names_to = "category", 
+               values_to = "pct") %>%
+  mutate(
+    category = str_remove(category, "pct_only_"),
+    category = paste("Only", category),
+    type     = "Single modality"
+  )
+
+bind_rows(concurrent_at_zero, single_mod_long) %>%
+  ggplot(aes(x = reorder(category, pct), y = pct, fill = type)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x     = NULL,
+    y     = "% of patients",
+    title = "LUSC: Treatment pattern landscape",
+    fill  = NULL
+  ) +
+  theme_bw()
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Squamous/LUSC_Sensitivity_result_with other_medication.png", width = 6, height = 4)
+
+```
+

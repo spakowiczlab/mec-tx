@@ -20,7 +20,7 @@ Predata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/D
 
 Diagnosis <- bind_rows(read.csv("/fs/ess/PDE0023/microbiomeRIG/2023_11_30/Clinical_Data/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20230620_Diagnosis_V4.csv"),
                           read.csv("/fs/ess/PDE0023/microbiomeRIG/2024_05_01/20PRJ060OSU_NormalizedFiles/20PRJ060OSU_20240221_Diagnosis_V4.csv")) %>% 
-  filter(AvatarKey %in% Predata$AvatarKey) %>% select(AvatarKey,AgeAtDiagnosis,GradeClinical,PathGroupStage, ClinGroupStage,) %>% 
+  filter(AvatarKey %in% Predata$AvatarKey) %>% select(AvatarKey,AgeAtDiagnosis,GradeClinical,PathGroupStage, ClinGroupStage) %>% 
   filter(! AgeAtDiagnosis == "Unknown/Not Applicable") %>%
   filter(! AgeAtDiagnosis == "Age Unknown/Not Recorded") %>%
   mutate(AgeAtDiagnosis = ifelse(grepl("Age 90 or older", AgeAtDiagnosis), "90", AgeAtDiagnosis))

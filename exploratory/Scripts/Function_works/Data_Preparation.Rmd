@@ -184,3 +184,89 @@ Modified_medication <- bind_rows(df, radiation_df) %>% unique()
 write_rds(Modified_medication,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Medication_NSCLCORIEN.rds")
 
 ```
+
+```{r}
+NSCLC_metadata <- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds") %>% select(-Race)
+Normalized_timeline <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Normalized_timeline.csv")
+
+res_clust <- tx_cluster_surv(
+  NSCLC_metadata = NSCLC_metadata,
+  timeline_long_norm = Normalized_timeline,
+  horizon_years = 5
+)
+
+Cluster_surv <- res_clust$Cluster_surv
+
+write_csv(Cluster_surv,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Cluster_survival_NSCLC.csv")
+
+
+# ---- segment preparation ----
+## The main part
+
+
+## Preparing the main file
+
+NSCLC_metadata<- read_rds("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/NSCLC_metadata.rds")
+Normalized_timeline <- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Normalized_timeline.csv")
+Refined_timeline<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Refined_intervals.csv")
+Cluster_surv<- read_csv("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Cluster_survival_NSCLC.csv")
+
+## Minor tweaking of the file
+
+full_df <- Normalized_timeline %>%
+  left_join(
+    NSCLC_metadata %>%
+      select(sample, Normalize_Candida, diagsurvtime, Sex, BMI, SmokingStatus, Histology),
+    by = "sample"
+  ) %>% unique()
+
+
+Cluster_surv_2<- Cluster_surv %>% left_join(full_df %>% select(sample,Stage,Sex,BMI,Histology) %>% unique(),by="sample")
+Cluster_surv_2<- Cluster_surv_2 %>% left_join(NSCLC_metadata %>% 
+                                                select(sample,Age,ProgRecurInd,SmokingStatus) %>% unique(), by= "sample")
+Cluster_surv_2 <- Cluster_surv_2 %>%
+  mutate(
+    SmokingStatus = case_when(
+      str_detect(tolower(SmokingStatus), "never") ~ "Never",
+      str_detect(tolower(SmokingStatus), "former|ever") ~ "Former",
+      str_detect(tolower(SmokingStatus), "current|active") ~ "Current",
+      TRUE ~ NA_character_
+    )
+  )
+
+Cluster_surv_2<- Cluster_surv_2 %>% mutate(Stage= ifelse(Stage %in% c("I","II"), "Early","Advanced"))
+
+
+ # -----------------------
+ # Example calls
+ # -----------------------
+ 
+ Demo <- tx_focus_dt(
+  Cluster_surv, Refined_timeline,
+  kc = "Cluster_k16", cl = 15,
+  focus_types  = c("Chemo","IO"),
+  n_twins      = 20,
+  min_share_tx = 0.33,
+  start_filter = "all" ,
+  enforce_sequence = F,
+  sequence_strict = F
+)
+
+ggsave("/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Figures/Function_figs/demo_1.png", p_io, width = 40, height = 8, dpi = 300)
+
+Normalized_timeline <- tx_normalize(
+  Modified_medication,
+  NSCLC_metadata = NSCLC_metadata
+)
+
+write_csv(Normalized_timeline,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Normalized_timeline.csv")
+
+Refined_timeline <- tx_intervals(Normalized_timeline,
+                                    id_col   = "sample",
+                                    time_col = "TimeSinceTreatmentStart",
+                                    type_col = "treatment_group")
+
+
+write_csv(Refined_timeline,"/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Data/Function_files/Refined_intervals.csv")
+
+```

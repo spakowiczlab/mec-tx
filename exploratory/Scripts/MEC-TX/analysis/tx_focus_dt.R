@@ -1,88 +1,72 @@
----
-title: "Tx_DT_calling"
-author: "Dipankor Dhrubo"
-date: "2025-12-15"
-output: html_document
----
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-
-```{r}
-
-### Supportive and builder functions 
-
 # ============================================================
 # MEC-TX analysis: tx_focus_dt()
 # analysis/tx_focus_dt.R
 # ============================================================
 
 tx_focus_dt <- function(
-  Cluster_surv, segs,
-  kc            = "Cluster_k14",
-  cl            = NULL,
-  focus_types   = c("Radiation"),
-  group_col     = "CAlevel",
-  horizon_years = 5,
-  n_twins       = 20,
-  min_share_tx  = 0.33,
-
-  # sequence options
-  enforce_sequence = FALSE,
-  seq_pattern      = NULL,
-  sequence_strict  = FALSE,
-
-  # start-of-treatment filter
-  # "all"         = no restriction
-  # "single_only" = first_t0 must have exactly 1 type (no combo start)
-  # "combo_only"  = first_t0 must have >=2 focus types simultaneously
-  start_filter     = c("all", "single_only", "combo_only"),
-  pure_focus_only  = FALSE,
-
-  # forest controls
-  add_forest                  = TRUE,
-  cox_covars                  = c("CAlevel", "stage_group", "sex", "age",
-                                   "smokingstatus"),
-  cox_ref_levels              = list(CAlevel = "Low", stage_group = "Local",
-                                      smokingstatus = "Never"),
-  forest_min_epv              = 1,
-  forest_priority             = c("CAlevel", "stage_group", "sex", "age",
-                                   "smokingstatus"),
-  forest_numeric_scale        = list(age = 5),
-  forest_numeric_units        = list(age = "years"),
-  forest_drop_stage_unknown   = FALSE,
-  forest_stage_unknown_levels = c("Unknown", "Unknown/Not Applicable",
-                                   "Not Applicable"),
-
-  # KM controls
-  km_risk_table        = TRUE,
-  km_risk_table_height = 0.26,
-  show_km_legend       = FALSE,
-
-  # layout
-  base_size  = 14,
-  title_size = 16,
-  widths     = c(1.4, 1, 1)
+    Cluster_surv, segs,
+    kc            = "Cluster_k14",
+    cl            = NULL,
+    focus_types   = c("Radiation"),
+    group_col     = "CAlevel",
+    horizon_years = 5,
+    n_twins       = 20,
+    min_share_tx  = 0.33,
+    
+    # sequence options
+    enforce_sequence = FALSE,
+    seq_pattern      = NULL,
+    sequence_strict  = FALSE,
+    
+    # start-of-treatment filter
+    # "all"         = no restriction
+    # "single_only" = first_t0 must have exactly 1 type (no combo start)
+    # "combo_only"  = first_t0 must have >=2 focus types simultaneously
+    start_filter     = c("all", "single_only", "combo_only"),
+    pure_focus_only  = FALSE,
+    
+    # forest controls
+    add_forest                  = TRUE,
+    cox_covars                  = c("CAlevel", "stage_group", "sex", "age",
+                                    "smokingstatus"),
+    cox_ref_levels              = list(CAlevel = "Low", stage_group = "Local",
+                                       smokingstatus = "Never"),
+    forest_min_epv              = 1,
+    forest_priority             = c("CAlevel", "stage_group", "sex", "age",
+                                    "smokingstatus"),
+    forest_numeric_scale        = list(age = 5),
+    forest_numeric_units        = list(age = "years"),
+    forest_drop_stage_unknown   = FALSE,
+    forest_stage_unknown_levels = c("Unknown", "Unknown/Not Applicable",
+                                    "Not Applicable"),
+    
+    # KM controls
+    km_risk_table        = TRUE,
+    km_risk_table_height = 0.26,
+    show_km_legend       = FALSE,
+    
+    # layout
+    base_size  = 14,
+    title_size = 16,
+    widths     = c(1.4, 1, 1)
 ) {
-
+  
   # ---- arg matching ----
   start_filter <- match.arg(start_filter)
-
+  
   # valid_types defined locally — no global scope dependency (Bug 4.2 fix)
   local_valid_types <- c(
     "Ancillary", "Chemo", "Hormone", "IO",
     "Small_Molecule", "Targeted", "Radiation", "Others"
   )
-
+  
   focus_types <- intersect(focus_types, local_valid_types)
   stopifnot(length(focus_types) >= 1)
-
+  
   # ---- prep & shares ----
   segs_prep <- prep_segs(segs, horizon_years = horizon_years)
   share_df  <- treatment_shares(segs_prep)
-
+  
   # ---- per-sample sequences & first-time info ----
   seq_tbl <- segs_prep %>%
     dplyr::arrange(sample, t0) %>%
@@ -98,12 +82,12 @@ tx_focus_dt <- function(
       types_first = list(unique(type[t0 == first_t0])),
       .groups = "drop"
     )
-
+  
   if (enforce_sequence && is.null(seq_pattern)) seq_pattern <- focus_types
-
+  
   # ---- capture whether cl was user-supplied BEFORE auto-assignment ----
   search_all <- is.null(cl)
-
+  
   # ---- auto-select best cluster if cl not given ----
   if (is.null(cl)) {
     cl <- Cluster_surv %>%
@@ -123,7 +107,7 @@ tx_focus_dt <- function(
       dplyr::slice_head(n = 1) %>%
       dplyr::pull(cluster)
   }
-
+  
   # ---- restrict to cluster (or all patients if search_all) ----
   # search_all = TRUE: search across all k solutions (cl = NULL was passed)
   # search_all = FALSE: restrict to the single specified cluster
@@ -133,7 +117,7 @@ tx_focus_dt <- function(
     df_cl <- Cluster_surv %>%
       dplyr::filter(.data[[kc]] == cl)
   }
-
+  
   # ---- build candidate twin set ----
   cand <- df_cl %>%
     dplyr::select(sample) %>%
@@ -181,7 +165,7 @@ tx_focus_dt <- function(
       if (pure_focus_only) only_focus_types else TRUE
     ) %>%
     dplyr::arrange(dplyr::desc(focus_share_tx), dplyr::desc(dur_treated))
-
+  
   # ---- dominance filter ----
   sel <- cand %>%
     dplyr::filter(
@@ -190,7 +174,7 @@ tx_focus_dt <- function(
     ) %>%
     dplyr::pull(sample) %>%
     unique()
-
+  
   # ---- relax threshold if not enough twins — dom_type_tx filter preserved ----
   thr <- min_share_tx
   while (length(sel) < min(n_twins, nrow(cand)) && thr > 0) {
@@ -203,7 +187,7 @@ tx_focus_dt <- function(
       dplyr::pull(sample)
     sel <- unique(c(sel, add))
   }
-
+  
   # ---- final fallback — dom_type_tx filter preserved ----
   if (length(sel) < min(n_twins, nrow(cand))) {
     sel <- unique(c(
@@ -213,12 +197,12 @@ tx_focus_dt <- function(
         dplyr::pull(sample)
     ))
   }
-
+  
   twin_ids  <- head(sel, min(n_twins, nrow(cand)))
   df_twins  <- df_cl %>%
     dplyr::semi_join(tibble::tibble(sample = twin_ids), by = "sample")
   focus_label <- paste(focus_types, collapse = "+")
-
+  
   # helper to apply consistent sizes to any ggplot
   apply_sizes <- function(p) {
     p + ggplot2::theme(
@@ -226,7 +210,7 @@ tx_focus_dt <- function(
       plot.title = ggplot2::element_text(size = title_size, face = "bold")
     )
   }
-
+  
   # ---- timeline panel ----
   p_timeline <- timeline_panel(
     segs_prep, share_df, twin_ids,
@@ -236,7 +220,7 @@ tx_focus_dt <- function(
     ),
     horizon_years = horizon_years
   ) |> apply_sizes()
-
+  
   # ---- KM panel ----
   p_km <- km_panel_from_df(
     df_twins,
@@ -250,11 +234,11 @@ tx_focus_dt <- function(
     risk_times        = 0:horizon_years,
     risk_table_height = km_risk_table_height
   ) |> apply_sizes()
-
+  
   if (!show_km_legend) {
     p_km <- p_km + ggplot2::theme(legend.position = "none")
   }
-
+  
   # ---- forest panel ----
   if (add_forest) {
     df_forest <- df_twins
@@ -278,7 +262,7 @@ tx_focus_dt <- function(
         }
       }
     }
-
+    
     p_forest <- cox_forest_plot_from_df(
       df_forest,
       covars        = cox_covars,
@@ -293,20 +277,18 @@ tx_focus_dt <- function(
       numeric_scale = forest_numeric_scale,
       numeric_units = forest_numeric_units
     ) |> apply_sizes()
-
+    
   } else {
     p_forest <- ggplot2::ggplot() +
       ggplot2::theme_void() +
       ggplot2::labs(title = "Forest (omitted)") |>
       apply_sizes()
   }
-
+  
   # ---- compose row ----
   p_row <- (p_timeline | p_km | p_forest) +
     patchwork::plot_layout(widths = widths, guides = "keep")
-
+  
   attr(p_row, "twin_ids") <- twin_ids
   p_row
 }
-
-```
