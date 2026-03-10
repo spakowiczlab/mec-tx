@@ -20,6 +20,8 @@ tx_cluster_surv <- function(
     
     # horizon / binning
     horizon_years        = 5,
+    grid_weeks           = 4,    # time bin width in weeks; 4 = monthly (default),
+    # 2 = biweekly, 1 = weekly, any positive integer
     include_none         = TRUE,
     drop_none_cols       = TRUE,
     
@@ -71,11 +73,20 @@ tx_cluster_surv <- function(
   }
   
   # ---------------------------------------------------------------------------
-  # 1) Build biweek-bin timeline
-  #    Biweekly resolution (1/26 year ≈ 2 weeks) aligns with validated
-  #    concurrency window from sensitivity analysis and standard oncology
-  #    cycle boundaries (q3w chemo, q3w/q6w IO, radiation course transitions).
+  # 1) Build time-bin timeline
+  #    grid_weeks controls the bin width:
+  #      4 weeks (default) = monthly resolution  → res = 13 bins/year
+  #      2 weeks           = biweekly resolution → res = 26 bins/year
+  #      1 week            = weekly resolution   → res = 52 bins/year
+  #    Formula: res = 52 / grid_weeks
   # ---------------------------------------------------------------------------
+  stopifnot(
+    "grid_weeks must be a single positive integer" =
+      length(grid_weeks) == 1 && grid_weeks > 0
+  )
+  res        <- 52 / grid_weeks          # bins per year
+  bin_prefix <- sprintf("Week%d", grid_weeks)
+  
   dat <- timeline_long_norm %>%
     transmute(
       sample                  = .data[[ sample_col_tl ]],
@@ -84,13 +95,13 @@ tx_cluster_surv <- function(
     ) %>%
     filter(!is.na(sample), !is.na(TimeSinceTreatmentStart), !is.na(treatment_group)) %>%
     mutate(
-      biweek_idx = round(TimeSinceTreatmentStart * 26),
-      TimeBin    = sprintf("Biweek_%03d", biweek_idx)
+      bin_idx = round(TimeSinceTreatmentStart * res),
+      TimeBin = sprintf("%s_%03d", bin_prefix, bin_idx)
     ) %>%
-    filter(biweek_idx >= 0, biweek_idx <= horizon_years * 26)
+    filter(bin_idx >= 0, bin_idx <= horizon_years * res)
   
   # ---------------------------------------------------------------------------
-  # 2) Wide biweek matrix (for inspection / debugging)
+  # 2) Wide bin matrix (for inspection / debugging)
   # ---------------------------------------------------------------------------
   treatment_matrix <- dat %>%
     group_by(sample, TimeBin) %>%
@@ -100,21 +111,21 @@ tx_cluster_surv <- function(
     ) %>%
     pivot_wider(names_from = TimeBin, values_from = Treatment, values_fill = NA)
   
-  biweek_cols <- setdiff(names(treatment_matrix), "sample")
+  bin_cols <- setdiff(names(treatment_matrix), "sample")
   treatment_matrix_ordered <- treatment_matrix[,
-                                               c("sample", biweek_cols[order(as.numeric(stringr::str_extract(biweek_cols, "\\d+")))]),
+                                               c("sample", bin_cols[order(as.numeric(stringr::str_extract(bin_cols, "\\d+")))]),
                                                drop = FALSE
   ]
   
   # ---------------------------------------------------------------------------
   # 3) Restrict to horizon, fill gaps, long format
   # ---------------------------------------------------------------------------
-  keep_biweeks <- sprintf("Biweek_%03d", 0:(horizon_years * 26))
-  keep_cols    <- intersect(keep_biweeks, names(treatment_matrix_ordered))
+  keep_bins <- sprintf("%s_%03d", bin_prefix, 0:round(horizon_years * res))
+  keep_cols <- intersect(keep_bins, names(treatment_matrix_ordered))
   
   treatment_short <- treatment_matrix_ordered %>%
     select(sample, all_of(keep_cols)) %>%
-    pivot_longer(cols = -sample, names_to = "Biweek", values_to = "Treatment")
+    pivot_longer(cols = -sample, names_to = "TimeBin", values_to = "Treatment")
   
   if (include_none) {
     treatment_short <- treatment_short %>%
@@ -122,7 +133,7 @@ tx_cluster_surv <- function(
   }
   
   # ---------------------------------------------------------------------------
-  # 4) Multi-hot encode: one binary column per (Biweek x TreatmentType)
+  # 4) Multi-hot encode: one binary column per (TimeBin x TreatmentType)
   # ---------------------------------------------------------------------------
   treatment_encoded <- treatment_short %>%
     filter(!is.na(Treatment)) %>%
@@ -130,7 +141,7 @@ tx_cluster_surv <- function(
     tidyr::separate_rows(Treatment, sep = "\\+") %>%
     mutate(
       Treatment = stringr::str_trim(Treatment),
-      Feature   = paste(Biweek, Treatment, sep = "_"),
+      Feature   = paste(TimeBin, Treatment, sep = "_"),
       Value     = 1L
     ) %>%
     select(sample, Feature, Value) %>%
