@@ -1,7 +1,100 @@
-# ============================================================
-# MEC-TX visualization: cox_forest_plot_from_df()
-# visualization/cox_forest_plot_from_df.R
-# ============================================================
+#' Cox Proportional Hazards Forest Plot
+#'
+#' Fits an adjusted Cox model on a pre-filtered survival dataset and renders
+#' a publication-ready forest plot. Handles reference-level encoding,
+#' case-insensitive column resolution, numeric covariate rescaling, and
+#' events-per-variable (EPV) driven covariate selection automatically.
+#' Degrades gracefully — returns an annotated blank plot rather than
+#' erroring when data are insufficient.
+#'
+#' @param df A data frame containing at minimum \code{diagsurvtime} (numeric,
+#'   years), \code{status} (integer, 0/1), and all columns named in
+#'   \code{covars}. Typically the \code{$data} slot from
+#'   \code{\link{tx_pooled_analysis}} or \code{\link{tx_compare_groups}}.
+#'   Column name matching is case-insensitive.
+#' @param covars Character vector of covariate column names to include in
+#'   the model. The first element is always retained regardless of EPV.
+#'   Default: \code{c("CAlevel", "stage_group", "sex", "age", "smokingstatus")}.
+#' @param ref_levels Named list specifying the reference level for each
+#'   categorical covariate. Keys are matched case-insensitively to column
+#'   names. Covariates not listed retain their existing factor ordering.
+#'   Default: \code{list(CAlevel = "Low", stage_group = "Local",
+#'   smokingstatus = "Never")}.
+#' @param title Character string. Plot title. Default \code{"Adjusted Cox"}.
+#' @param min_epv Integer. Minimum events-per-variable threshold used to
+#'   cap the number of model parameters at \code{floor(events / min_epv)}.
+#'   Covariates are dropped in reverse \code{priority} order until the cap
+#'   is satisfied. The first covariate is always retained. Default \code{5}.
+#' @param priority Character vector or \code{NULL}. Covariates listed first
+#'   are retained preferentially when EPV forces dropping. \code{NULL}
+#'   uses the \code{covars} order as-is.
+#' @param numeric_scale Named list mapping numeric covariate names to a
+#'   divisor applied before modelling. The reported HR reflects one unit of
+#'   the rescaled variable. Default \code{list(age = 10)} gives HR per
+#'   10-year increment.
+#' @param numeric_units Named list mapping numeric covariate names to a
+#'   unit label used in axis annotations. Default \code{list(age = "years")}.
+#' @param numeric_pretty Named list or \code{NULL}. Display name overrides
+#'   for numeric covariates on the forest plot axis. \code{NULL} auto-generates
+#'   labels from \code{numeric_scale} and \code{numeric_units}.
+#' @param base_size Base font size (pt) passed to
+#'   \code{ggplot2::theme_minimal()}. Default \code{16}.
+#' @param title_size Font size (pt) for the plot title. Default \code{22}.
+#' @param axis_title_size Font size (pt) for axis titles. Default \code{14}.
+#' @param axis_text_size Font size (pt) for axis tick and covariate labels.
+#'   Default \code{12}.
+#' @param bold Logical. If \code{TRUE} all text elements use bold weight.
+#'   Default \code{TRUE}.
+#'
+#' @return A \code{ggplot} object. The subtitle reports complete-case n,
+#'   event count, and the covariates actually fitted. Returns an annotated
+#'   blank plot (still a \code{ggplot}) if columns are missing, fewer than
+#'   10 complete cases exist, fewer than 3 events are observed, or the Cox
+#'   model fails to converge.
+#'
+#' @details
+#' \strong{Column requirements:} \code{df} must contain \code{diagsurvtime}
+#' (time from diagnosis in years) and \code{status} (0 = censored, 1 = event).
+#' These names are hardcoded; rename columns upstream if necessary.
+#'
+#' \strong{EPV selection:} Parameters are budgeted as
+#' \code{floor(events / min_epv)}. Categorical covariates consume
+#' \code{(n_levels - 1)} parameters each. The first element of \code{covars}
+#' (typically \code{CAlevel}) is always included regardless of budget.
+#'
+#' \strong{Convergence fallback:} If the full selected model fails, covariates
+#' are dropped one at a time from the end until the model converges.
+#'
+#' @examples
+#' \dontrun{
+#' # Standard usage after tx_pooled_analysis()
+#' p <- cox_forest_plot_from_df(
+#'   df    = pooled_res$data,
+#'   title = "Adjusted Cox — LUSC Chemoradiation"
+#' )
+#' pdf(file.path(out_dir, "cox_forest_lusc.pdf"), width = 10, height = 8)
+#' print(p)
+#' dev.off()
+#'
+#' # Override covariate priority and reference levels
+#' p2 <- cox_forest_plot_from_df(
+#'   df         = pooled_res$data,
+#'   priority   = c("CAlevel", "stage_group"),
+#'   ref_levels = list(CAlevel = "Low", stage_group = "Local",
+#'                     smokingstatus = "Never"),
+#'   title      = "Adjusted Cox — LUAD Chemo + IO"
+#' )
+#' }
+#'
+#' @seealso \code{\link{tx_pooled_analysis}}, \code{\link{tx_compare_groups}},
+#'   \code{\link{km_panel_from_df}}
+#'
+#' @import ggplot2
+#' @importFrom survival coxph Surv
+#' @importFrom broom tidy
+#' @importFrom dplyr filter mutate n_distinct
+#' @importFrom stats relevel na.omit var as.formula
+#' @export
 # -------- Cox forest plot --------
 cox_forest_plot_from_df <- function(
   df,
@@ -22,22 +115,17 @@ cox_forest_plot_from_df <- function(
 ) {
 
   # ---- resolve all covariate column names case-insensitively (Bug 4.4 fix) ----
-  resolved_covars <- character(length(covars))
-  for (i in seq_along(covars)) {
-    m <- names(df)[tolower(names(df)) == tolower(covars[i])]
-    if (length(m) == 1) {
-      resolved_covars[i] <- m
-    } else {
-      warning(sprintf("covar '%s' not found — skipping.", covars[i]))
-      resolved_covars[i] <- NA_character_
-    }
-  }
-  covars <- resolved_covars[!is.na(resolved_covars)]
+  covars <- Filter(Negate(is.null), lapply(covars, function(cv) {
+    tryCatch(resolve_col(df, cv, cv), error = function(e) {
+      warning(sprintf("covar '%s' not found — skipping.", cv))
+      NULL
+    })
+  }))
+  covars <- unlist(covars)
 
   # resolve ref_levels keys to actual column names
   names(ref_levels) <- vapply(names(ref_levels), function(nm) {
-    m <- names(df)[tolower(names(df)) == tolower(nm)]
-    if (length(m) == 1) m else nm
+    tryCatch(resolve_col(df, nm, nm), error = function(e) nm)
   }, character(1))
 
   need <- unique(c("diagsurvtime", "status", covars))
@@ -175,8 +263,8 @@ cox_forest_plot_from_df <- function(
 
   ggplot2::ggplot(tt, ggplot2::aes(y = label, x = estimate)) +
     ggplot2::geom_vline(xintercept = 1, linetype = 2) +
-    ggplot2::geom_errorbarh(ggplot2::aes(xmin = conf.low, xmax = conf.high),
-                             height = 0.2, linewidth = 1) +
+    ggplot2::geom_errorbar(ggplot2::aes(xmin = conf.low, xmax = conf.high),
+                           orientation = "y", width = 0.2, linewidth = 1) +
     ggplot2::geom_point(size = 3) +
     ggplot2::scale_x_log10(limits = xpad) +
     ggplot2::labs(

@@ -3,6 +3,96 @@
 # visualization/timeline_panel.R
 # ============================================================
 
+#' Treatment Timeline Panel for Selected Patients
+#'
+#' Renders a horizontal swimlane plot showing treatment type over time for a
+#' specified set of patients (e.g. cluster representatives or "top twins").
+#' Each patient occupies one row; treatment types are drawn as coloured
+#' horizontal segments with a small vertical offset per type to reduce
+#' overplotting. Row order is driven by a focus-type share score.
+#'
+#' @param segs_prepped A pre-processed segments data frame produced by
+#'   \code{\link{prep_segs}}. Must contain columns \code{sample},
+#'   \code{type}, \code{t0}, and \code{t1} (treatment start and end in
+#'   years since first treatment).
+#' @param share_df A data frame with one row per patient containing
+#'   \code{sample} and any number of \code{share_*_tx} columns (treatment
+#'   type duration shares) plus \code{dur_treated}. Typically the
+#'   \code{$shares} slot from \code{\link{treatment_shares}}.
+#' @param twin_ids Character vector of patient \code{sample} identifiers to
+#'   display. Rows in \code{segs_prepped} not in \code{twin_ids} are
+#'   silently dropped.
+#' @param title Character string. Plot title. Default \code{"Top twins"}.
+#' @param horizon_years Numeric. Maximum x-axis extent in years.
+#'   Default \code{5}.
+#' @param focus_types Character vector or \code{NULL}. Treatment type(s) used
+#'   to compute the row ordering score. Patients with higher combined share
+#'   of these types appear at the top. Must match type labels used in
+#'   \code{share_*_tx} column names (e.g. \code{"Radiation"} maps to
+#'   \code{share_Radiation_tx}). \code{NULL} falls back to the first
+#'   \code{share_*_tx} column found.
+#' @param base_size Base font size (pt). Default \code{16}.
+#' @param title_size Font size (pt) for the plot title. Default \code{22}.
+#' @param axis_title_size Font size (pt) for axis titles. Default \code{14}.
+#' @param axis_text_size Font size (pt) for axis tick labels. Default \code{12}.
+#' @param legend_title_size Font size (pt) for the legend title.
+#'   Default \code{14}.
+#' @param legend_text_size Font size (pt) for legend item labels.
+#'   Default \code{12}.
+#' @param bold Logical. If \code{TRUE} all text elements use bold weight.
+#'   Default \code{TRUE}.
+#'
+#' @return A \code{ggplot} object. Print to display or save with
+#'   \code{pdf()} / \code{ggsave()}.
+#'
+#' @details
+#' \strong{Colour palette:} Treatment type colours are defined locally
+#' inside the function (matching \code{tx_cols} in \code{constants.R}) and
+#' do not depend on any global object. Only types present in the data are
+#' included in the legend.
+#'
+#' \strong{Row ordering:} The ordering score is the row-wise sum of all
+#' \code{focus_share_cols} shares per patient. Ties are broken by the
+#' factor level order of \code{sample}.
+#'
+#' \strong{Vertical offset:} Each treatment type within a patient row is
+#' offset by \code{0.10 * (type_idx - mean(type_idx))} on the y-axis to
+#' visually separate overlapping segments without displacing the row label.
+#'
+#' @examples
+#' \dontrun{
+#' segs  <- prep_segs(intervals$timeline_long_intv)
+#' sh    <- treatment_shares(intervals$timeline_long_intv)
+#'
+#' # Show top 10 patients by Radiation share
+#' top10 <- sh$shares %>%
+#'   dplyr::arrange(dplyr::desc(share_Radiation_tx)) %>%
+#'   dplyr::slice_head(n = 10) %>%
+#'   dplyr::pull(sample)
+#'
+#' p <- timeline_panel(
+#'   segs_prepped = segs,
+#'   share_df     = sh$shares,
+#'   twin_ids     = top10,
+#'   title        = "Top 10 by Radiation share",
+#'   focus_types  = "Radiation"
+#' )
+#'
+#' pdf(file.path(out_dir, "timeline_panel_rad.pdf"), width = 12, height = 8)
+#' print(p)
+#' dev.off()
+#' }
+#'
+#' @seealso \code{\link{prep_segs}}, \code{\link{treatment_shares}},
+#'   \code{\link{plot_timeline_for_k}}
+#'
+#' @import ggplot2
+#' @importFrom dplyr semi_join left_join select starts_with distinct mutate
+#'   across all_of
+#' @importFrom tibble tibble
+#' @importFrom forcats fct_reorder
+#' @export
+
 timeline_panel <- function(
   segs_prepped,
   share_df,
