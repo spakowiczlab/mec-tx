@@ -42,8 +42,13 @@
 #' @param min_share_tx Numeric in \code{[0, 1]}. Minimum combined
 #'   \code{focus_types} share for dominant mode. Passed to
 #'   \code{\link{tx_focus_dt}}. Default \code{0.33}.
-#' @param min_overlap Numeric. Minimum overlap duration in years required
-#'   for concurrent mode. Default \code{0} (any overlap).
+#' @param concurrent_window Numeric. Maximum gap in years between two
+#'   treatment intervals to still be classified as concurrent. Default
+#'   \code{4/52} (4 weeks). A value of \code{0} means strict overlap
+#'   only. Implements the PI-specified definition: a new treatment
+#'   starting within 4 weeks of a prior treatment ending is classified
+#'   as concurrent. Applied symmetrically — direction of the gap does
+#'   not matter.
 #' @param n_twins Integer. Maximum twins per cluster for dominant mode.
 #'   \code{999} retains all. Default \code{999}.
 #' @param enforce_sequence Logical. Passed to \code{\link{tx_focus_dt}}
@@ -125,8 +130,10 @@
 #'     and no other treatment type above threshold (Ancillary always
 #'     allowed).}
 #'   \item{\code{"concurrent"}}{Patients where all pairs of
-#'     \code{focus_types} overlapped in time by more than
-#'     \code{min_overlap} years. Requires at least 2 focus types.}
+#'     \code{focus_types} were administered within \code{concurrent_window}
+#'     years of each other (default 4 weeks). Treatments that overlap
+#'     OR start within the window after the other ends both qualify.
+#'     Requires at least 2 focus types.}
 #'   \item{\code{"dominant"}}{Patients whose dominant treatment type is
 #'     one of \code{focus_types}, aggregated across all cluster
 #'     assignments via \code{\link{tx_focus_dt}}.}
@@ -139,9 +146,14 @@
 #' and \code{n_cohort} reflects patients whose dominant treatment type was
 #' not in \code{focus_types} — this is expected and correct behaviour.
 #'
-#' \strong{Concurrent mode:} Uses pairwise interval overlap checking
-#' across all combinations of \code{focus_types}. A patient must show
-#' overlap for every pair to qualify.
+#' \strong{Concurrent mode:} Uses pairwise interval gap checking across
+#' all combinations of \code{focus_types}. The gap between two intervals
+#' is defined as \code{max(t0_a, t0_b) - min(t1_a, t1_b)}. A negative
+#' gap means overlap; a positive gap means sequential. A patient qualifies
+#' if the gap is less than \code{concurrent_window} for every pair. This
+#' implements the PI-specified definition: a treatment starting within 4
+#' weeks of another ending is classified as concurrent. The window is
+#' applied symmetrically in both directions.
 #'
 #' \strong{Dominant mode:} Calls \code{\link{tx_focus_dt}} for every
 #' \code{Cluster_kN} column in \code{Cluster_surv} and pools the twin
@@ -153,11 +165,22 @@
 #'
 #' # Concurrent chemoradiation — the LUSC standard-of-care signal
 #' res <- tx_pooled_analysis(
-#'   Cluster_surv = res_cluster$Cluster_surv,
-#'   timeline     = intervals,
-#'   focus_types  = c("Chemo", "Radiation"),
-#'   mode         = "concurrent",
-#'   group_var    = "CAlevel"
+#'   Cluster_surv      = res_cluster$Cluster_surv,
+#'   timeline          = intervals,
+#'   focus_types       = c("Chemo", "Radiation"),
+#'   mode              = "concurrent",
+#'   group_var         = "CAlevel",
+#'   concurrent_window = 4/52   # PI definition: 4-week window
+#' )
+#'
+#' # Strict overlap only (original behaviour)
+#' res_strict <- tx_pooled_analysis(
+#'   Cluster_surv      = res_cluster$Cluster_surv,
+#'   timeline          = intervals,
+#'   focus_types       = c("Chemo", "Radiation"),
+#'   mode              = "concurrent",
+#'   group_var         = "CAlevel",
+#'   concurrent_window = 0   # strict overlap only
 #' )
 #'
 #' # Save composite figure
@@ -209,8 +232,10 @@ tx_pooled_analysis <- function(
     horizon_years = 5,
     min_share_tx  = 0.33,      # dominant mode only
     
-    # concurrent mode: minimum overlap in years to count as concurrent
-    min_overlap   = 0,
+    # concurrent mode: max gap in years to still count as concurrent
+    # default = 4/52 (4 weeks) — PI definition
+    # set to 0 for strict overlap only
+    concurrent_window = 4/52,
     
     # dominant mode: passed to tx_focus_dt
     n_twins       = 999,
@@ -372,6 +397,16 @@ tx_pooled_analysis <- function(
     )
   }
   
+  # --- 12. concurrent_window must be non-negative ---
+  if (!is.numeric(concurrent_window) || length(concurrent_window) != 1 ||
+      concurrent_window < 0) {
+    stop(
+      "tx_pooled_analysis(): 'concurrent_window' must be a single non-negative number.\n",
+      "  -> You passed: ", deparse(concurrent_window), "\n",
+      "  -> Default: 4/52 (4 weeks). Use 0 for strict overlap only."
+    )
+  }
+  
   # ===========================================================================
   # MAIN FUNCTION BODY
   # ===========================================================================
@@ -418,7 +453,14 @@ tx_pooled_analysis <- function(
                          presence$sample
                        },
                        
-                       # ---- concurrent: focus_types overlap in time ----
+                       # ---- concurrent: focus_types within concurrent_window of each other ----
+                       # gap = max(t0_a, t0_b) - min(t1_a, t1_b)
+                       #   negative gap = intervals overlap
+                       #   positive gap = sequential with a gap between them
+                       # A patient qualifies if gap < concurrent_window for every pair.
+                       # This implements the PI definition: a treatment starting within
+                       # 4 weeks of another ending is classified as concurrent.
+                       # The window is applied symmetrically in both directions.
                        "concurrent" = {
                          concurrent_ids <- segs_prep %>%
                            dplyr::distinct(sample) %>%
@@ -438,9 +480,12 @@ tx_pooled_analysis <- function(
                              dplyr::select(sample, t0_b = t0, t1_b = t1)
                            
                            overlap_ids <- segs_a %>%
-                             dplyr::inner_join(segs_b, by = "sample", relationship = "many-to-many") %>%
-                             dplyr::mutate(overlap = pmin(t1_a, t1_b) - pmax(t0_a, t0_b)) %>%
-                             dplyr::filter(overlap > min_overlap) %>%
+                             dplyr::inner_join(segs_b, by = "sample",
+                                               relationship = "many-to-many") %>%
+                             dplyr::mutate(
+                               gap = pmax(t0_a, t0_b) - pmin(t1_a, t1_b)
+                             ) %>%
+                             dplyr::filter(gap < concurrent_window) %>%
                              dplyr::distinct(sample) %>%
                              dplyr::pull(sample)
                            
@@ -486,13 +531,15 @@ tx_pooled_analysis <- function(
   }
   
   # =========================================================
-  # FIX 5 — Stage 1: n_raw (patients passing mode filter)
+  # Stage 1: n_raw (patients passing mode filter)
   # =========================================================
   n_raw <- length(cohort_ids)
   
   message(sprintf(
-    "[tx_pooled_analysis] Mode='%s' | focus=%s | n_raw=%d patients pass mode filter",
-    mode, focus_label, n_raw
+    "[tx_pooled_analysis] Mode='%s' | focus=%s | window=%.4f yrs (%.1f wks) | n_raw=%d patients pass mode filter",
+    mode, focus_label,
+    concurrent_window, concurrent_window * 52,
+    n_raw
   ))
   
   # =========================================================
@@ -545,16 +592,12 @@ tx_pooled_analysis <- function(
       by = "sample"
     )
   
-  # Focus-dominant subset: patients whose dominant tx is one of the focus types.
-  # This is used consistently for timeline, KM, and forest — biologically correct
-  # because patients dominated by other types (e.g. IO in a Chemo+Radiation query)
-  # will appear in their own appropriate analysis.
   dominant_ids        <- unique(df_plot$sample)
   n_timeline_patients <- length(dominant_ids)
   df_km               <- df_cohort %>% dplyr::filter(sample %in% dominant_ids)
   
   # =========================================================
-  # FIX 5 — Stage 2 & 3: n_timeline and n_km with audit trail
+  # Stage 2 & 3: n_timeline and n_km with audit trail
   # =========================================================
   n_timeline <- dplyr::n_distinct(df_plot$sample)
   n_km       <- dplyr::n_distinct(df_km$sample)
@@ -737,16 +780,16 @@ tx_pooled_analysis <- function(
     km          = p_km,
     forest      = p_forest,
     timeline    = p_timeline,
-    ids         = cohort_ids,          # all patients passing the mode filter
-    df          = df_cohort,           # full cohort data (all ids)
+    ids         = cohort_ids,
+    df          = df_cohort,
     segs        = segs_cohort,
     shares      = share_cohort,
     df_plot     = df_plot,
     mode        = mode,
     focus_types = focus_types,
     group_var   = group_var,
-    n_cohort    = n_km,                # Fix 5: focus-dominant count (KM/forest/timeline)
-    n_raw       = n_raw,               # Fix 5: total passing mode filter
+    n_cohort    = n_km,
+    n_raw       = n_raw,
     n_plot      = n_timeline_patients,
     group_table = table(df_km[[group_var]], useNA = "ifany")
   )
