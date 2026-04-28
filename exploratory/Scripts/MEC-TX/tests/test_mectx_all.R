@@ -16,33 +16,15 @@
 # =============================================================================
 
 library(testthat)
+library(mectx)
+library(dplyr)
 
 # =============================================================================
 # 0. Source MEC-TX files
 # =============================================================================
 
-BASE_R <- "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Scripts/MEC-TX"
+BASE_R <- "/users/PAS1695/dipankor99/Github/digital-twins/exploratory/Scripts/MEC-TX/R"
 
-source(file.path(BASE_R, "standardise_status.R"))
-source(file.path(BASE_R, "dominant_exclusive.R"))
-source(file.path(BASE_R, "get_focus_cohort.R"))
-source(file.path(BASE_R, "constants.R"))
-source(file.path(BASE_R, "resolve_col.R"))
-source(file.path(BASE_R, "has_subseq.R"))
-source(file.path(BASE_R, "prep_segs.R"))
-source(file.path(BASE_R, "treatment_shares.R"))
-source(file.path(BASE_R, "DT_timeline_panel.R"))
-source(file.path(BASE_R, "km_panel_from_df.R"))
-source(file.path(BASE_R, "cox_forest_plot_from_df.R"))
-source(file.path(BASE_R, "plot_timeline_for_k.R"))
-source(file.path(BASE_R, "tx_duration.R"))
-source(file.path(BASE_R, "tx_normalize.R"))
-source(file.path(BASE_R, "tx_intervals.R"))
-source(file.path(BASE_R, "tx_cluster_surv.R"))
-source(file.path(BASE_R, "tx_focus_dt.R"))
-source(file.path(BASE_R, "tx_pooled_analysis.R"))
-source(file.path(BASE_R, "tx_compare_groups.R"))
-source(file.path(BASE_R, "tx_lines.R"))
 
 
 # ---------------------------------------------------------------------------
@@ -863,6 +845,8 @@ test_that("tx_normalize handles numeric sample IDs [synthetic]", {
 # =============================================================================
 
 library(testthat)
+library(mectx)
+library(dplyr)
 
 # --- Source dependencies (adjust path for standalone runs) ---
 # source(file.path(BASE_R, "tx_duration.R"))
@@ -873,49 +857,49 @@ library(testthat)
 context("tx_duration — .merge_intervals")
 
 test_that("non-overlapping intervals are preserved", {
-  res <- .merge_intervals(c(0, 2, 5), c(1, 3, 6))
+  res <- mectx:::.merge_intervals(c(0, 2, 5), c(1, 3, 6))
   expect_equal(nrow(res), 3)
   expect_equal(res$start, c(0, 2, 5))
   expect_equal(res$end,   c(1, 3, 6))
 })
 
 test_that("overlapping intervals are merged", {
-  res <- .merge_intervals(c(0, 0.5, 5), c(1, 1.5, 6))
+  res <- mectx:::.merge_intervals(c(0, 0.5, 5), c(1, 1.5, 6))
   expect_equal(nrow(res), 2)
   expect_equal(res$start, c(0, 5))
   expect_equal(res$end,   c(1.5, 6))
 })
 
 test_that("adjacent intervals (touching) are merged", {
-  res <- .merge_intervals(c(0, 1), c(1, 2))
+  res <- mectx:::.merge_intervals(c(0, 1), c(1, 2))
   expect_equal(nrow(res), 1)
   expect_equal(res$start, 0)
   expect_equal(res$end,   2)
 })
 
 test_that("single interval returns as-is", {
-  res <- .merge_intervals(1, 3)
+  res <- mectx:::.merge_intervals(1, 3)
   expect_equal(nrow(res), 1)
   expect_equal(res$start, 1)
   expect_equal(res$end,   3)
 })
 
 test_that("empty input returns zero-row data.frame", {
-  res <- .merge_intervals(numeric(0), numeric(0))
+  res <- mectx:::.merge_intervals(numeric(0), numeric(0))
   expect_equal(nrow(res), 0)
   expect_true(all(c("start", "end") %in% names(res)))
 })
 
 test_that("fully nested intervals collapse to outer", {
   # [0, 5] contains [1, 3]
-  res <- .merge_intervals(c(0, 1), c(5, 3))
+  res <- mectx:::.merge_intervals(c(0, 1), c(5, 3))
   expect_equal(nrow(res), 1)
   expect_equal(res$start, 0)
   expect_equal(res$end,   5)
 })
 
 test_that("unsorted input is handled correctly", {
-  res <- .merge_intervals(c(5, 0, 2), c(6, 1, 3))
+  res <- mectx:::.merge_intervals(c(5, 0, 2), c(6, 1, 3))
   expect_equal(nrow(res), 3)
   expect_equal(res$start, c(0, 2, 5))
 })
@@ -935,7 +919,7 @@ syn_timeline <- data.frame(
 )
 
 test_that("per-type duration sums correctly with overlap merge", {
-  res <- .duration_per_type(syn_timeline)
+  res <- mectx:::.duration_per_type(syn_timeline)
   # P1 Chemo: intervals [0, 0.75] + [0.5, 1.0] merge to [0, 1.0] = 1.0 yr
   p1_chemo <- res$duration_yrs[res$sample == "P1" & res$type == "Chemo"]
   expect_equal(p1_chemo, 1.0)
@@ -948,13 +932,13 @@ test_that("per-type duration sums correctly with overlap merge", {
 })
 
 test_that("patients missing a type are not included (no zero rows)", {
-  res <- .duration_per_type(syn_timeline)
+  res <- mectx:::.duration_per_type(syn_timeline)
   # P3 has no IO → should not appear
   expect_false(any(res$sample == "P3" & res$type == "IO"))
 })
 
 test_that("all expected patient-type combinations are present", {
-  res <- .duration_per_type(syn_timeline)
+  res <- mectx:::.duration_per_type(syn_timeline)
   # P1: Chemo + IO, P2: Chemo + IO, P3: Chemo = 5 rows
   expect_equal(nrow(res), 5)
 })
@@ -967,20 +951,20 @@ context("tx_duration — .duration_total")
 test_that("concurrent treatment is not double-counted", {
   # P1: Chemo [0, 0.75]+[0.5, 1.0] + IO [0, 0.5]
   # Merged across all: [0, 1.0] = 1.0 yr (not 1.5)
-  res <- .duration_total(syn_timeline)
+  res <- mectx:::.duration_total(syn_timeline)
   p1_total <- res$duration_yrs_total[res$sample == "P1"]
   expect_equal(p1_total, 1.0)
 })
 
 test_that("non-overlapping types sum correctly", {
   # P2: Chemo [0, 0.5] + IO [1.0, 1.5] = 1.0 yr (0.5 + 0.5, no overlap)
-  res <- .duration_total(syn_timeline)
+  res <- mectx:::.duration_total(syn_timeline)
   p2_total <- res$duration_yrs_total[res$sample == "P2"]
   expect_equal(p2_total, 1.0)
 })
 
 test_that("all patients are returned", {
-  res <- .duration_total(syn_timeline)
+  res <- mectx:::.duration_total(syn_timeline)
   expect_equal(sort(res$sample), c("P1", "P2", "P3"))
 })
 
@@ -1386,38 +1370,38 @@ test_that("clean annotation record is kept after specimen filter", {
   expect_equal(p1_l1$line_source, "annotated")
 })
 
-# ── Section 5: .map_line_regimen() internals ──────────────────────────────────
+# ── Section 5: mectx:::.map_line_regimen() internals ──────────────────────────────────
 context("tx_lines — .map_line_regimen")
 
 test_that("First Line/Regimen maps to First", {
-  expect_equal(.map_line_regimen("First Line/Regimen"), "First")
+  expect_equal(mectx:::.map_line_regimen("First Line/Regimen"), "First")
 })
 
 test_that("Neoadjuvant Regimen maps to Neoadjuvant", {
-  expect_equal(.map_line_regimen("Neoadjuvant Regimen"), "Neoadjuvant")
+  expect_equal(mectx:::.map_line_regimen("Neoadjuvant Regimen"), "Neoadjuvant")
 })
 
 test_that("Adjuvant/First Line maps to First", {
-  expect_equal(.map_line_regimen("Adjuvant/First Line"), "First")
+  expect_equal(mectx:::.map_line_regimen("Adjuvant/First Line"), "First")
 })
 
 test_that("Maintenance maps to Maintenance", {
-  expect_equal(.map_line_regimen("Maintenance"), "Maintenance")
+  expect_equal(mectx:::.map_line_regimen("Maintenance"), "Maintenance")
 })
 
 test_that("Unknown/Not Applicable maps to NA", {
-  expect_true(is.na(.map_line_regimen("Unknown/Not Applicable")))
+  expect_true(is.na(mectx:::.map_line_regimen("Unknown/Not Applicable")))
 })
 
 test_that("Unknown/Not Reported maps to NA", {
-  expect_true(is.na(.map_line_regimen("Unknown/Not Reported")))
+  expect_true(is.na(mectx:::.map_line_regimen("Unknown/Not Reported")))
 })
 
 test_that("Sixth Line/Regimen maps to Sixth", {
-  expect_equal(.map_line_regimen("Sixth Line/Regimen"), "Sixth")
+  expect_equal(mectx:::.map_line_regimen("Sixth Line/Regimen"), "Sixth")
 })
 
-# ── Section 6: .merge_to_blocks() internals ───────────────────────────────────
+# ── Section 6: mectx:::.merge_to_blocks() internals ───────────────────────────────────
 context("tx_lines — .merge_to_blocks")
 
 test_that("concurrent intervals produce one block with combined types", {
@@ -1427,7 +1411,7 @@ test_that("concurrent intervals produce one block with combined types", {
     type       = c("Chemo","IO"),
     stringsAsFactors = FALSE
   )
-  blocks <- .merge_to_blocks(tl)
+  blocks <- mectx:::.merge_to_blocks(tl)
   expect_equal(nrow(blocks), 1L)
   expect_true(grepl("\\+", blocks$block_types))
 })
@@ -1439,17 +1423,17 @@ test_that("non-overlapping intervals produce separate blocks", {
     type       = c("Chemo","IO"),
     stringsAsFactors = FALSE
   )
-  blocks <- .merge_to_blocks(tl)
+  blocks <- mectx:::.merge_to_blocks(tl)
   expect_equal(nrow(blocks), 2L)
 })
 
 test_that("empty input returns empty data.frame", {
   tl <- data.frame(start_year=numeric(0), end_year=numeric(0),
                    type=character(0), stringsAsFactors=FALSE)
-  expect_equal(nrow(.merge_to_blocks(tl)), 0L)
+  expect_equal(nrow(mectx:::.merge_to_blocks(tl)), 0L)
 })
 
-# ── Section 7: .assign_lines_from_blocks() internals ─────────────────────────
+# ── Section 7: mectx:::.assign_lines_from_blocks() internals ─────────────────────────
 context("tx_lines — .assign_lines_from_blocks")
 
 test_that("gap > threshold increments line number", {
@@ -1459,7 +1443,7 @@ test_that("gap > threshold increments line number", {
     block_types = c("Chemo","IO"),
     stringsAsFactors = FALSE
   )
-  lines <- .assign_lines_from_blocks(blocks, gap_threshold = 3/52)
+  lines <- mectx:::.assign_lines_from_blocks(blocks, gap_threshold = 3/52)
   expect_equal(max(lines$line_number), 2L)
 })
 
@@ -1470,7 +1454,7 @@ test_that("gap <= threshold keeps same line", {
     block_types = c("Chemo","IO"),
     stringsAsFactors = FALSE
   )
-  lines <- .assign_lines_from_blocks(blocks, gap_threshold = 3/52)
+  lines <- mectx:::.assign_lines_from_blocks(blocks, gap_threshold = 3/52)
   expect_equal(max(lines$line_number), 1L)
 })
 
@@ -1479,7 +1463,7 @@ test_that("line_duration_months is positive for valid blocks", {
     block_start = 60.0, block_end = 60.5, block_types = "Chemo",
     stringsAsFactors = FALSE
   )
-  lines <- .assign_lines_from_blocks(blocks, gap_threshold = 3/52)
+  lines <- mectx:::.assign_lines_from_blocks(blocks, gap_threshold = 3/52)
   expect_gt(lines$line_duration_months, 0)
 })
 
