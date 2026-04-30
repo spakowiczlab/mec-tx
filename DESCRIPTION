@@ -20,7 +20,7 @@ Description: Implements the MEC-TX (MEchanistic Clustering - Treatment
     comparing survival outcomes across treatment groups. Designed for use
     with registry-based cohorts such as the ORIEN AVATAR dataset. Methods
     follow the digital-twin framework described in Dhrubo and Spakowicz (2026)
-    <https://github.com/spakowiczlab/mectx>.
+    <https://github.com/spakowiczlab/mec-tx>.
     treatment timelines using the MEC-TX digital-twin framework.
 License: MIT + file LICENSE
 Encoding: UTF-8
