@@ -1,4 +1,4 @@
-# mec-tx
+# mec-tx [![DOI](https://zenodo.org/badge/1041423783.svg)](https://doi.org/10.5281/zenodo.19929922)
 
 MEchanistic Clustering - Treatment eXposure Framework
 
