@@ -90,29 +90,43 @@
 #' endpoints do not count).
 #'
 #' @examples
-#' \dontrun{
-#' intervals <- tx_intervals(med_data, metadata)
-#'
-#' # Concurrent chemoradiation cohort (LUSC standard of care)
-#' crad_cohort <- get_focus_cohort(
-#'   metadata    = Cluster_surv,
-#'   timeline    = intervals$timeline_long_intv,
-#'   focus_types = c("Chemo", "Radiation"),
-#'   mode        = "concurrent"
+#' set.seed(42)
+#' n <- 6
+#' spec_ages <- seq(55, 80, by = 5)
+#' tx_types <- list(
+#'   c('Chemo','IO','Radiation'),
+#'   c('Chemo','Targeted','Others'),
+#'   c('IO','Radiation','Chemo'),
+#'   c('Targeted','Chemo','IO'),
+#'   c('Radiation','Others','Chemo'),
+#'   c('IO','Targeted','Chemo')
 #' )
-#'
-#' # IO-only cohort (no other dominant treatment)
-#' io_cohort <- get_focus_cohort(
-#'   metadata    = LUAD_metadata,
-#'   timeline    = intervals$timeline_long_intv,
-#'   focus_types = "IO",
-#'   mode        = "only"
+#' med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+#'   data.frame(
+#'     sample                     = paste0('P', i),
+#'     Age.At.Specimen.Collection = spec_ages[i],
+#'     AgeAtLastContact           = spec_ages[i] + 3,
+#'     diagsurvtime               = 3,
+#'     Status                     = i %% 2L,
+#'     Medication                 = c('DrugA','DrugB','DrugC'),
+#'     treatment_group            = tx_types[[i]],
+#'     AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+#'     AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     stringsAsFactors           = FALSE
+#'   )
+#' }))
+#' meta <- data.frame(
+#'   sample       = paste0('P', seq_len(n)),
+#'   diagsurvtime = rep(3, n),
+#'   Status       = seq_len(n) %% 2L,
+#'   CAlevel      = rep(c('High','Low'), n/2),
+#'   stringsAsFactors = FALSE
 #' )
-#'
-#' # Join back to survival data for downstream analysis
-#' io_surv <- Cluster_surv %>%
-#'   dplyr::semi_join(io_cohort, by = "sample")
-#' }
+#' norm      <- tx_normalize(med_data)
+#' intervals <- tx_intervals(norm)
+#' cohort <- get_focus_cohort(meta, intervals, focus_types = c('Chemo', 'IO'))
+#' head(cohort)
 #'
 #' @seealso \code{\link{tx_intervals}}, \code{\link{dominant_exclusive}},
 #'   \code{\link{tx_pooled_analysis}}

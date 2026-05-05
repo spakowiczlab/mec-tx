@@ -65,20 +65,9 @@ column for display only. Never pass it to \code{survival::Surv()} ---
 this will produce incorrect results.
 }
 \examples{
-\dontrun{
-# Numeric 0/1 --- coerces to integer, adds status_label
 df <- data.frame(sample = 1:3, diagsurvtime = c(1.2, 3.4, 2.1),
                  status = c(0, 1, 1))
-df <- standardise_status(df)
-
-# Character coding --- auto-detected and recoded
-df2 <- data.frame(sample = 1:3, diagsurvtime = c(1.2, 3.4, 2.1),
-                  vital = c("Alive", "Dead", "Deceased"))
-df2 <- standardise_status(df2, status_col = "vital")
-
-# LUAD --- capitalised column name, renamed to lowercase in output
-LUAD_metadata <- standardise_status(LUAD_metadata, status_col = "Status")
-}
+standardise_status(df)
 
 }
 \seealso{

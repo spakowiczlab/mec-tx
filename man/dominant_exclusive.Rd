@@ -70,23 +70,36 @@ These are distinct from \code{"Other"} --- they have no dominant signal,
 not an unrecognised one.
 }
 \examples{
-\dontrun{
-intervals <- tx_intervals(med_data, metadata)
-
-# Default 20\% threshold
-regimens <- dominant_exclusive(intervals$timeline_long_intv)
-
-# Stricter threshold --- require 30\% share to qualify
-regimens_strict <- dominant_exclusive(
-  intervals$timeline_long_intv,
-  min_share = 0.30
+set.seed(42)
+n <- 6
+spec_ages <- seq(55, 80, by = 5)
+tx_types <- list(
+  c('Chemo','IO','Radiation'),
+  c('Chemo','Targeted','Others'),
+  c('IO','Radiation','Chemo'),
+  c('Targeted','Chemo','IO'),
+  c('Radiation','Others','Chemo'),
+  c('IO','Targeted','Chemo')
 )
-
-# Join back to survival data for Cox model
-cohort <- cohort \%>\%
-  dplyr::left_join(regimens, by = "sample") \%>\%
-  dplyr::mutate(regimen = tidyr::replace_na(regimen, "Unassigned"))
-}
+med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+  data.frame(
+    sample                     = paste0('P', i),
+    Age.At.Specimen.Collection = spec_ages[i],
+    AgeAtLastContact           = spec_ages[i] + 3,
+    diagsurvtime               = 3,
+    Status                     = i \%\% 2L,
+    Medication                 = c('DrugA','DrugB','DrugC'),
+    treatment_group            = tx_types[[i]],
+    AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+    AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+    AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+    stringsAsFactors           = FALSE
+  )
+}))
+norm      <- tx_normalize(med_data)
+intervals <- tx_intervals(norm)
+res <- dominant_exclusive(intervals)
+head(res)
 
 }
 \seealso{

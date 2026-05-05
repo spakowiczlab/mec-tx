@@ -159,15 +159,44 @@
 #' }
 #'
 #' @examples
-#' \dontrun{
-#' res <- tx_duration(
-#'   timeline  = timeline_long_intv,
-#'   meta      = Cluster_surv,
-#'   group_var = "CAlevel"
+#' set.seed(42)
+#' n <- 6
+#' spec_ages <- seq(55, 80, by = 5)
+#' tx_types <- list(
+#'   c('Chemo','IO','Radiation'),
+#'   c('Chemo','Targeted','Others'),
+#'   c('IO','Radiation','Chemo'),
+#'   c('Targeted','Chemo','IO'),
+#'   c('Radiation','Others','Chemo'),
+#'   c('IO','Targeted','Chemo')
 #' )
+#' med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+#'   data.frame(
+#'     sample                     = paste0('P', i),
+#'     Age.At.Specimen.Collection = spec_ages[i],
+#'     AgeAtLastContact           = spec_ages[i] + 3,
+#'     diagsurvtime               = 3,
+#'     Status                     = i %% 2L,
+#'     Medication                 = c('DrugA','DrugB','DrugC'),
+#'     treatment_group            = tx_types[[i]],
+#'     AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+#'     AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     stringsAsFactors           = FALSE
+#'   )
+#' }))
+#' meta <- data.frame(
+#'   sample       = paste0('P', seq_len(n)),
+#'   diagsurvtime = rep(3, n),
+#'   Status       = seq_len(n) %% 2L,
+#'   CAlevel      = rep(c('High','Low'), n/2),
+#'   stringsAsFactors = FALSE
+#' )
+#' norm      <- tx_normalize(med_data)
+#' intervals <- tx_intervals(norm)
+#' res <- tx_duration(timeline = intervals, meta = meta,
+#'                    group_var = 'CAlevel', plot = FALSE)
 #' res$summary_table
-#' res$plot
-#' }
 #'
 #' @export
 tx_duration <- function(timeline,

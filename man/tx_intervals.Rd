@@ -91,23 +91,46 @@ arithmetic and avoids zero-duration segments.
 the value used in \code{\link{tx_normalize}}, interval boundaries will
 be misaligned and durations will be incorrect. Always pass the same
 value to both functions.
+
+\strong{Grid alignment:} Time values are snapped to the nearest grid
+point using \code{round(t_year * grid_res)} where
+\code{grid_res = 52 / grid_weeks}. This ensures interval boundaries
+align exactly with the bins created by \code{\link{tx_normalize}}.
+
+\strong{Block vs run:} A \emph{block} groups all treatment types
+active within a contiguous set of grid points (no gap). A \emph{run}
+is a contiguous sequence of the same treatment type within a block.
+The block structure captures treatment pauses; the run structure
+separates types within a block.
+
+\strong{End-exclusive intervals:} \code{end_year} is set to
+\code{(max_grid_index + 1) / grid_res}, making intervals
+end-exclusive. This convention is consistent with standard interval
+arithmetic and avoids zero-duration segments.
+
+\strong{grid_weeks alignment:} If \code{grid_weeks} does not match
+the value used in \code{\link{tx_normalize}}, interval boundaries will
+be misaligned and durations will be incorrect. Always pass the same
+value to both functions.
 }
 \examples{
-\dontrun{
-# Standard pipeline
-norm      <- tx_normalize(med_data, metadata)
+med_data <- data.frame(
+  sample                     = rep(c('P01','P02'), each = 3),
+  Age.At.Specimen.Collection = rep(c(60, 65), each = 3),
+  AgeAtLastContact           = rep(c(62, 67), each = 3),
+  diagsurvtime               = rep(c(2, 2), each = 3),
+  Status                     = rep(c(1L, 0L), each = 3),
+  Medication                 = rep(c('DrugA','DrugB','DrugC'), 2),
+  treatment_group            = c('Chemo','IO','Radiation',
+                                 'Chemo','Targeted','Others'),
+  AgeAtMedStart              = c(60.1, 60.5, 61.0, 65.1, 65.4, 66.0),
+  AgeAtMedStop               = c(60.4, 60.9, 61.3, 65.3, 65.8, 66.2),
+  AgeAtTreatmentStart.mod    = c(60.1, 60.5, 61.0, 65.1, 65.4, 66.0),
+  stringsAsFactors           = FALSE
+)
+norm      <- tx_normalize(med_data)
 intervals <- tx_intervals(norm)
-
-# Access interval data frame
 head(intervals)
-
-# Biweekly grid --- must match tx_normalize() call
-norm2      <- tx_normalize(med_data, metadata, grid_weeks = 2)
-intervals2 <- tx_intervals(norm2, grid_weeks = 2)
-
-# Retain None type (untreated bins)
-intervals_with_none <- tx_intervals(norm, drop_types = character(0))
-}
 
 }
 \seealso{

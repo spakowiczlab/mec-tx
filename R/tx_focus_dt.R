@@ -124,35 +124,53 @@
 #' cohorts are smaller and the 5-year increment gives more estimable HRs.
 #'
 #' @examples
-#' \dontrun{
-#' intervals <- tx_intervals(med_data, Cluster_surv)
-#' segs      <- intervals$timeline_long_intv
-#'
-#' # Radiation-focused twins, auto-select cluster
-#' p <- tx_focus_dt(
-#'   Cluster_surv = res$Cluster_surv,
+#' set.seed(42)
+#' n <- 6
+#' spec_ages <- seq(55, 80, by = 5)
+#' tx_types <- list(
+#'   c('Chemo','IO','Radiation'),
+#'   c('Chemo','Targeted','Others'),
+#'   c('IO','Radiation','Chemo'),
+#'   c('Targeted','Chemo','IO'),
+#'   c('Radiation','Others','Chemo'),
+#'   c('IO','Targeted','Chemo')
+#' )
+#' med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+#'   data.frame(
+#'     sample                     = paste0('P', i),
+#'     Age.At.Specimen.Collection = spec_ages[i],
+#'     AgeAtLastContact           = spec_ages[i] + 3,
+#'     diagsurvtime               = 3,
+#'     Status                     = i %% 2L,
+#'     Medication                 = c('DrugA','DrugB','DrugC'),
+#'     treatment_group            = tx_types[[i]],
+#'     AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+#'     AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     stringsAsFactors           = FALSE
+#'   )
+#' }))
+#' meta <- data.frame(
+#'   sample       = paste0('P', seq_len(n)),
+#'   diagsurvtime = rep(3, n),
+#'   Status       = seq_len(n) %% 2L,
+#'   CAlevel      = rep(c('High','Low'), n/2),
+#'   stringsAsFactors = FALSE
+#' )
+#' norm        <- tx_normalize(med_data)
+#' intervals   <- tx_intervals(norm)
+#' segs        <- prep_segs(intervals)
+#' cluster_res <- tx_cluster_surv(meta, norm, k_range = 2,
+#'                                umap_neighbors = 5,
+#'                                min_feature_variance = 0)
+#' res <- tx_focus_dt(
+#'   Cluster_surv = cluster_res$Cluster_surv,
 #'   segs         = segs,
-#'   kc           = "Cluster_k14",
-#'   focus_types  = "Radiation"
+#'   kc           = 'Cluster_k2',
+#'   focus_types  = c('Chemo'),
+#'   n_twins      = 3
 #' )
-#' pdf(file.path(tempdir(), "radiation_twins_k14.pdf"), width = 18, height = 8)
-#' print(p)
-#' dev.off()
-#'
-#' # Retrieve twin IDs for downstream analysis
-#' twin_ids <- attr(p, "twin_ids")
-#'
-#' # Chemo+IO twins in a specific cluster, with sequence enforcement
-#' p2 <- tx_focus_dt(
-#'   Cluster_surv     = res$Cluster_surv,
-#'   segs             = segs,
-#'   kc               = "Cluster_k8",
-#'   cl               = 3,
-#'   focus_types      = c("Chemo", "IO"),
-#'   enforce_sequence = TRUE,
-#'   seq_pattern      = c("Chemo", "IO")
-#' )
-#' }
+#' names(res)
 #'
 #' @seealso \code{\link{tx_cluster_surv}}, \code{\link{tx_intervals}},
 #'   \code{\link{timeline_panel}}, \code{\link{km_panel_from_df}},

@@ -66,25 +66,16 @@
 #' are dropped one at a time from the end until the model converges.
 #'
 #' @examples
-#' \dontrun{
-#' # Standard usage after tx_pooled_analysis()
-#' p <- cox_forest_plot_from_df(
-#'   df    = pooled_res$data,
-#'   title = "Adjusted Cox --- LUSC Chemoradiation"
+#' df <- data.frame(
+#'   label    = c('High vs Low'),
+#'   estimate = c(1.8),
+#'   conf.low = c(1.1),
+#'   conf.high = c(2.9),
+#'   p.value  = c(0.02),
+#'   stringsAsFactors = FALSE
 #' )
-#' pdf(file.path(tempdir(), "cox_forest_lusc.pdf"), width = 10, height = 8)
-#' print(p)
-#' dev.off()
-#'
-#' # Override covariate priority and reference levels
-#' p2 <- cox_forest_plot_from_df(
-#'   df         = pooled_res$data,
-#'   priority   = c("CAlevel", "stage_group"),
-#'   ref_levels = list(CAlevel = "Low", stage_group = "Local",
-#'                     smokingstatus = "Never"),
-#'   title      = "Adjusted Cox --- LUAD Chemo + IO"
-#' )
-#' }
+#' p <- cox_forest_plot_from_df(df = df, title = 'Example Forest Plot')
+#' class(p)
 #'
 #' @seealso \code{\link{tx_pooled_analysis}}, \code{\link{tx_compare_groups}},
 #'   \code{\link{km_panel_from_df}}

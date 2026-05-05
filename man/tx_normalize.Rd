@@ -104,20 +104,22 @@ used in \code{\link{tx_intervals}} and \code{\link{tx_cluster_surv}}.
 Mismatches produce incorrect time bin alignment downstream.
 }
 \examples{
-\dontrun{
-# Standard LUSC pipeline
-norm <- tx_normalize(LUSC_med_data, Cluster_surv)
-
-# LUAD --- capitalised Status column handled automatically
-norm_luad <- tx_normalize(LUAD_med_data, LUAD_metadata)
-
-# Biweekly grid --- pass same grid_weeks to all downstream functions
-norm_bw      <- tx_normalize(med_data, metadata, grid_weeks = 2)
-intervals_bw <- tx_intervals(norm_bw, grid_weeks = 2)
-
-# No metadata join --- timeline only
-norm_bare <- tx_normalize(med_data)
-}
+med_data <- data.frame(
+  sample                     = rep(c('P01','P02'), each = 3),
+  Age.At.Specimen.Collection = rep(c(60, 65), each = 3),
+  AgeAtLastContact           = rep(c(62, 67), each = 3),
+  diagsurvtime               = rep(c(2, 2), each = 3),
+  Status                     = rep(c(1L, 0L), each = 3),
+  Medication                 = rep(c('DrugA','DrugB','DrugC'), 2),
+  treatment_group            = c('Chemo','IO','Radiation',
+                                 'Chemo','Targeted','Others'),
+  AgeAtMedStart              = c(60.1, 60.5, 61.0, 65.1, 65.4, 66.0),
+  AgeAtMedStop               = c(60.4, 60.9, 61.3, 65.3, 65.8, 66.2),
+  AgeAtTreatmentStart.mod    = c(60.1, 60.5, 61.0, 65.1, 65.4, 66.0),
+  stringsAsFactors           = FALSE
+)
+norm <- tx_normalize(med_data)
+head(norm)
 
 }
 \seealso{

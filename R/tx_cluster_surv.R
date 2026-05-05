@@ -126,30 +126,43 @@
 #' produce a warning; the first occurrence is retained.
 #'
 #' @examples
-#' \dontrun{
-#' # Standard LUSC pipeline
-#' norm <- tx_normalize(LUSC_med_data, Cluster_surv)
-#' res  <- tx_cluster_surv(Cluster_surv, norm)
-#'
-#' # Access primary output
-#' Cluster_surv_k <- res$Cluster_surv
-#'
-#' # LUAD --- capitalised Status column, extra metadata columns retained
-#' norm_luad <- tx_normalize(LUAD_med_data, LUAD_metadata)
-#' res_luad  <- tx_cluster_surv(
-#'   metadata           = LUAD_metadata,
-#'   timeline_long_norm = norm_luad,
-#'   status_col         = "Status",
-#'   meta_keep          = c("CAlevel", "stage_group", "smokingstatus")
+#' set.seed(42)
+#' n <- 6
+#' spec_ages <- seq(55, 80, by = 5)
+#' tx_types <- list(
+#'   c('Chemo','IO','Radiation'),
+#'   c('Chemo','Targeted','Others'),
+#'   c('IO','Radiation','Chemo'),
+#'   c('Targeted','Chemo','IO'),
+#'   c('Radiation','Others','Chemo'),
+#'   c('IO','Targeted','Chemo')
 #' )
-#'
-#' # Adjust umap_neighbors for small cohorts
-#' res_small <- tx_cluster_surv(
-#'   metadata           = metadata,
-#'   timeline_long_norm = norm,
-#'   umap_neighbors     = min(30, nrow(metadata) - 1)
+#' med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+#'   data.frame(
+#'     sample                     = paste0('P', i),
+#'     Age.At.Specimen.Collection = spec_ages[i],
+#'     AgeAtLastContact           = spec_ages[i] + 3,
+#'     diagsurvtime               = 3,
+#'     Status                     = i %% 2L,
+#'     Medication                 = c('DrugA','DrugB','DrugC'),
+#'     treatment_group            = tx_types[[i]],
+#'     AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+#'     AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+#'     stringsAsFactors           = FALSE
+#'   )
+#' }))
+#' meta <- data.frame(
+#'   sample       = paste0('P', seq_len(n)),
+#'   diagsurvtime = rep(3, n),
+#'   Status       = seq_len(n) %% 2L,
+#'   CAlevel      = rep(c('High','Low'), n/2),
+#'   stringsAsFactors = FALSE
 #' )
-#' }
+#' norm <- tx_normalize(med_data)
+#' res  <- tx_cluster_surv(meta, norm, k_range = 2,
+#'                         umap_neighbors = 5, min_feature_variance = 0)
+#' head(res$Cluster_surv)
 #'
 #' @seealso \code{\link{tx_normalize}}, \code{\link{standardise_status}},
 #'   \code{\link{tx_pooled_analysis}}, \code{\link{km_panel_from_df}},

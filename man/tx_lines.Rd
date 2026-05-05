@@ -156,36 +156,43 @@ absolute \code{AgeAtMedStart} values and the filter would drop all
 records. Annotation filtering still runs.
 }
 \examples{
-\dontrun{
-intervals <- tx_intervals(tx_normalize(med_data, metadata))
-
-# Algorithm-only mode (no annotations)
-res <- tx_lines(
-  timeline  = intervals,
-  meta      = Cluster_surv,
-  group_var = "CAlevel",
-  exclude_types = c("Ancillary", "Others")
+set.seed(42)
+n <- 6
+spec_ages <- seq(55, 80, by = 5)
+tx_types <- list(
+  c('Chemo','IO','Radiation'),
+  c('Chemo','Targeted','Others'),
+  c('IO','Radiation','Chemo'),
+  c('Targeted','Chemo','IO'),
+  c('Radiation','Others','Chemo'),
+  c('IO','Targeted','Chemo')
 )
-res$patient_summary
-res$group_comparison
-
-# With MedLineRegimen annotations (LUAD)
-res2 <- tx_lines(
-  timeline     = intervals,
-  annotations  = LUAD_medication,
-  meta         = LUAD_metadata,
-  group_var    = "CAlevel",
-  stage_col    = "stage_group",
-  exclude_types = c("Ancillary", "Others"),
-  filter_timeline = FALSE
+med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+  data.frame(
+    sample                     = paste0('P', i),
+    Age.At.Specimen.Collection = spec_ages[i],
+    AgeAtLastContact           = spec_ages[i] + 3,
+    diagsurvtime               = 3,
+    Status                     = i \%\% 2L,
+    Medication                 = c('DrugA','DrugB','DrugC'),
+    treatment_group            = tx_types[[i]],
+    AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+    AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+    AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+    stringsAsFactors           = FALSE
+  )
+}))
+meta <- data.frame(
+  sample       = paste0('P', seq_len(n)),
+  diagsurvtime = rep(3, n),
+  Status       = seq_len(n) \%\% 2L,
+  CAlevel      = rep(c('High','Low'), n/2),
+  stringsAsFactors = FALSE
 )
-
-# Access lines data frame
-head(res2$lines)
-
-# Consolidation-flagged lines for PI review
-res2$lines[res2$lines$line_flag == "possible_consolidation", ]
-}
+norm      <- tx_normalize(med_data)
+intervals <- tx_intervals(norm)
+res <- tx_lines(timeline = intervals, meta = meta, group_var = 'CAlevel')
+head(res$patient_summary)
 
 }
 \seealso{

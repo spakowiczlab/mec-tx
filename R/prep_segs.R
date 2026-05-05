@@ -35,7 +35,7 @@
 #' \code{constants.R}, avoiding a global scope dependency (Bug 4.2 fix).
 #' @importFrom dplyr mutate case_when filter
 #' @importFrom stringr str_detect regex
-#' @noRd
+#' @export
 prep_segs <- function(segs, horizon_years = 5) {
   
   # valid_types defined locally --- no global scope dependency (Bug 4.2 fix)

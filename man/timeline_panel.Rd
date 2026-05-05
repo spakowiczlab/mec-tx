@@ -90,28 +90,38 @@ offset by \code{0.10 * (type_idx - mean(type_idx))} on the y-axis to
 visually separate overlapping segments without displacing the row label.
 }
 \examples{
-\dontrun{
-segs  <- prep_segs(intervals$timeline_long_intv)
-sh    <- treatment_shares(intervals$timeline_long_intv)
-
-# Show top 10 patients by Radiation share
-top10 <- sh$shares \%>\%
-  dplyr::arrange(dplyr::desc(share_Radiation_tx)) \%>\%
-  dplyr::slice_head(n = 10) \%>\%
-  dplyr::pull(sample)
-
-p <- timeline_panel(
-  segs_prepped = segs,
-  share_df     = sh$shares,
-  twin_ids     = top10,
-  title        = "Top 10 by Radiation share",
-  focus_types  = "Radiation"
+set.seed(42)
+n <- 6
+spec_ages <- seq(55, 80, by = 5)
+tx_types <- list(
+  c('Chemo','IO','Radiation'),
+  c('Chemo','Targeted','Others'),
+  c('IO','Radiation','Chemo'),
+  c('Targeted','Chemo','IO'),
+  c('Radiation','Others','Chemo'),
+  c('IO','Targeted','Chemo')
 )
-
-pdf(file.path(tempdir(), "timeline_panel_rad.pdf"), width = 12, height = 8)
-print(p)
-dev.off()
-}
+med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+  data.frame(
+    sample                     = paste0('P', i),
+    Age.At.Specimen.Collection = spec_ages[i],
+    AgeAtLastContact           = spec_ages[i] + 3,
+    diagsurvtime               = 3,
+    Status                     = i \%\% 2L,
+    Medication                 = c('DrugA','DrugB','DrugC'),
+    treatment_group            = tx_types[[i]],
+    AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+    AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+    AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+    stringsAsFactors           = FALSE
+  )
+}))
+norm      <- tx_normalize(med_data)
+intervals <- tx_intervals(norm)
+segs      <- prep_segs(intervals)
+sh        <- treatment_shares(segs)
+p <- timeline_panel(segs, sh, twin_ids = unique(intervals$sample))
+class(p)
 
 }
 \seealso{

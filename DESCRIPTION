@@ -29,6 +29,7 @@ RoxygenNote: 7.3.3
 Depends:
     R (>= 4.4.0)
 Imports:
+    magrittr,
     broom,
     dplyr,
     forcats,

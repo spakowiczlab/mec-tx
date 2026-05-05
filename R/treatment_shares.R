@@ -52,7 +52,7 @@
 #' @importFrom dplyr group_by summarise mutate across all_of starts_with
 #'   ends_with select
 #' @importFrom tidyr pivot_wider
-#' @noRd
+#' @export
 treatment_shares <- function(segs_prepped) {
   
   # --- Input validation --- must be output of prep_segs() ---  # --- (Thread 8)

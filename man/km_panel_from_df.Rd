@@ -115,31 +115,49 @@ object so downstream code assembling multi-panel figures does not need
 to branch on \code{risk_table}.
 }
 \examples{
-\dontrun{
-# Basic CAlevel KM for full cohort
+set.seed(42)
+n <- 6
+spec_ages <- seq(55, 80, by = 5)
+tx_types <- list(
+  c('Chemo','IO','Radiation'),
+  c('Chemo','Targeted','Others'),
+  c('IO','Radiation','Chemo'),
+  c('Targeted','Chemo','IO'),
+  c('Radiation','Others','Chemo'),
+  c('IO','Targeted','Chemo')
+)
+med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+  data.frame(
+    sample                     = paste0('P', i),
+    Age.At.Specimen.Collection = spec_ages[i],
+    AgeAtLastContact           = spec_ages[i] + 3,
+    diagsurvtime               = 3,
+    Status                     = i \%\% 2L,
+    Medication                 = c('DrugA','DrugB','DrugC'),
+    treatment_group            = tx_types[[i]],
+    AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+    AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+    AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+    stringsAsFactors           = FALSE
+  )
+}))
+meta <- data.frame(
+  sample       = paste0('P', seq_len(n)),
+  diagsurvtime = rep(3, n),
+  Status       = seq_len(n) \%\% 2L,
+  CAlevel      = rep(c('High','Low'), n/2),
+  stringsAsFactors = FALSE
+)
+norm        <- tx_normalize(med_data)
+cluster_res <- tx_cluster_surv(meta, norm, k_range = 2,
+                               umap_neighbors = 5,
+                               min_feature_variance = 0)
 p <- km_panel_from_df(
-  df    = Cluster_surv,
-  title = "Overall Survival by CAlevel --- LUSC"
+  df        = cluster_res$Cluster_surv,
+  group_col = 'CAlevel',
+  title     = 'KM by CAlevel'
 )
-pdf(file.path(tempdir(), "km_calevel_lusc.pdf"), width = 10, height = 8)
-print(p)
-dev.off()
-
-# Clipped to 5 years, no risk table
-p2 <- km_panel_from_df(
-  df            = Cluster_surv,
-  horizon_years = 5,
-  risk_table    = FALSE,
-  title         = "OS by CAlevel --- 5-year window"
-)
-
-# Custom grouping variable
-p3 <- km_panel_from_df(
-  df        = pooled_res$data,
-  group_col = "stage_group",
-  title     = "OS by Stage"
-)
-}
+class(p)
 
 }
 \seealso{

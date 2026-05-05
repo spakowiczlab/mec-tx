@@ -147,37 +147,49 @@ For more than 10 group levels, \code{grDevices::hcl.colors()} is used
 with a message.
 }
 \examples{
-\dontrun{
-# Compare by CAlevel in full LUSC cohort
-res <- tx_compare_groups(
-  df        = Cluster_surv,
-  group_var = "CAlevel",
-  title     = "Overall Survival by CAlevel --- LUSC"
+set.seed(42)
+n <- 6
+spec_ages <- seq(55, 80, by = 5)
+tx_types <- list(
+  c('Chemo','IO','Radiation'),
+  c('Chemo','Targeted','Others'),
+  c('IO','Radiation','Chemo'),
+  c('Targeted','Chemo','IO'),
+  c('Radiation','Others','Chemo'),
+  c('IO','Targeted','Chemo')
 )
-pdf(file.path(tempdir(), "calevel_compare_lusc.pdf"), width = 14, height = 8)
-print(res$combined)
-dev.off()
-
-# Compare by smoking status in chemo-only cohort
-res2 <- tx_compare_groups(
-  df        = chemo_cohort,
-  group_var = "smokingstatus",
-  ref_level = "Never"
-)
-
-# Compare two custom user-defined groups
-res3 <- tx_compare_groups(
-  df            = Cluster_surv,
-  custom_groups = list(
-    GroupA = c("sample1", "sample2", "sample3"),
-    GroupB = c("sample4", "sample5", "sample6")
+med_data <- do.call(rbind, lapply(seq_len(n), function(i) {
+  data.frame(
+    sample                     = paste0('P', i),
+    Age.At.Specimen.Collection = spec_ages[i],
+    AgeAtLastContact           = spec_ages[i] + 3,
+    diagsurvtime               = 3,
+    Status                     = i \%\% 2L,
+    Medication                 = c('DrugA','DrugB','DrugC'),
+    treatment_group            = tx_types[[i]],
+    AgeAtMedStart              = spec_ages[i] + c(0.1, 0.5, 1.0),
+    AgeAtMedStop               = spec_ages[i] + c(0.4, 0.9, 1.3),
+    AgeAtTreatmentStart.mod    = spec_ages[i] + c(0.1, 0.5, 1.0),
+    stringsAsFactors           = FALSE
   )
+}))
+meta <- data.frame(
+  sample       = paste0('P', seq_len(n)),
+  diagsurvtime = rep(3, n),
+  Status       = seq_len(n) \%\% 2L,
+  CAlevel      = rep(c('High','Low'), n/2),
+  stringsAsFactors = FALSE
 )
-
-# Access tidy Cox results
-res$cox_results
-res$group_summary
-}
+norm        <- tx_normalize(med_data)
+cluster_res <- tx_cluster_surv(meta, norm, k_range = 2,
+                               umap_neighbors = 5,
+                               min_feature_variance = 0)
+res <- tx_compare_groups(
+  df        = cluster_res$Cluster_surv,
+  group_var = 'CAlevel',
+  title     = 'Overall Survival by CAlevel'
+)
+names(res)
 
 }
 \seealso{
